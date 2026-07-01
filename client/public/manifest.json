@@ -1,0 +1,17 @@
+{
+  "name": "NannaBoo",
+  "short_name": "NannaBoo",
+  "description": "Find your family at the lake",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#ffffff",
+  "theme_color": "#1a73e8",
+  "icons": [
+    {
+      "src": "/icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}
