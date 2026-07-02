@@ -5,6 +5,7 @@ import { randomUUID } from 'crypto';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import * as db from './db/index.js';
+import * as friendStore from './friendStore.js';
 import poisRouter from './routes/pois.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -34,6 +35,61 @@ function getOrCreateGroup(code) {
     groups.set(code, { guests: new Map(), pins: [], eventId: null, hydrated: false });
   }
   return groups.get(code);
+}
+
+// Live connections by guest id (friend updates target individuals, not groups)
+const sessions = new Map(); // guestId -> { ws, groupCode }
+
+// Event identity for friend-link scoping: the DB event uuid when persistence
+// is up, else the group code (in-memory mode only compares these for equality).
+async function resolveEventKey(groupCode) {
+  if (db.enabled) {
+    const eventId = await db.ensureEventForGroup(groupCode);
+    if (eventId) return eventId;
+  }
+  return `code:${groupCode}`;
+}
+
+// friendState is per-viewer (who my friends are, who can see me is theirs to
+// know) — always sent to one guest, never broadcast with group state.
+async function sendFriendState(targetGuestId) {
+  const sess = sessions.get(targetGuestId);
+  if (!sess || sess.ws.readyState !== 1) return;
+  try {
+    const eventKey = groups.get(sess.groupCode)?.eventId
+      ?? await resolveEventKey(sess.groupCode);
+    const state = await friendStore.getFriendState(targetGuestId, eventKey);
+    sess.ws.send(JSON.stringify({ type: 'friendState', ...state }));
+  } catch (err) {
+    console.error('[friends] friendState failed:', err.message);
+  }
+}
+
+async function handleFriendOp(msg, guestId, groupCode) {
+  const group = groups.get(groupCode);
+  if (!group) return;
+  const eventKey = group.eventId ?? await resolveEventKey(groupCode);
+  let other = null;
+
+  if (msg.type === 'friendRequest') {
+    // Requests are only to guests currently present in the same group.
+    if (typeof msg.toGuestId !== 'string' || msg.toGuestId === guestId) return;
+    if (!group.guests.has(msg.toGuestId)) return;
+    await friendStore.sendRequest(guestId, msg.toGuestId, eventKey);
+    other = msg.toGuestId;
+  }
+
+  if (msg.type === 'friendRespond') {
+    other = await friendStore.respondRequest(msg.requestId, guestId, !!msg.accept, eventKey);
+  }
+
+  if (msg.type === 'friendLevel') {
+    const ok = await friendStore.setLevel(guestId, msg.friendGuestId, msg.level, eventKey);
+    if (ok) other = msg.friendGuestId;
+  }
+
+  await sendFriendState(guestId);
+  if (other) await sendFriendState(other); // their view changed too
 }
 
 // Persist the guest/event, and after a server restart reload the group's pins
@@ -96,9 +152,13 @@ wss.on('connection', (ws) => {
         lastSeen: Date.now(),
       });
 
+      sessions.set(guestId, { ws, groupCode });
+      friendStore.rememberName(guestId, name);
+
       broadcast(group, groupStatePayload(group));
       persistJoin(group, groupCode, guestId, name)
         .catch(err => console.error('[db] persistJoin failed:', err.message));
+      sendFriendState(guestId);
       return;
     }
 
@@ -142,10 +202,16 @@ wss.on('connection', (ws) => {
       broadcast(group, groupStatePayload(group));
       db.deletePin(msg.pinId);
     }
+
+    if (msg.type === 'friendRequest' || msg.type === 'friendRespond' || msg.type === 'friendLevel') {
+      handleFriendOp(msg, guestId, groupCode)
+        .catch(err => console.error('[friends] op failed:', err.message));
+    }
   });
 
   ws.on('close', () => {
     if (!guestId || !groupCode) return;
+    if (sessions.get(guestId)?.ws === ws) sessions.delete(guestId);
     const group = groups.get(groupCode);
     if (!group) return;
     group.guests.delete(guestId);

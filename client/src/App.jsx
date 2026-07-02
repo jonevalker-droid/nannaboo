@@ -21,6 +21,7 @@ export default function App() {
   const [user, setUser] = useState(null);
   const [peers, setPeers] = useState([]);
   const [pins, setPins] = useState([]);
+  const [friendState, setFriendState] = useState({ friends: [], sent: [], received: [] });
   const [wsStatus, setWsStatus] = useState('disconnected');
 
   const wsRef = useRef(null);
@@ -49,6 +50,9 @@ export default function App() {
       if (msg.type === 'groupState') {
         setPeers(msg.guests.filter((g) => g.id !== userData.id));
         setPins(msg.pins);
+      }
+      if (msg.type === 'friendState') {
+        setFriendState({ friends: msg.friends, sent: msg.sent, received: msg.received });
       }
     };
 
@@ -105,6 +109,18 @@ export default function App() {
     ws.send(JSON.stringify({ type: 'removePin', pinId }));
   }, []);
 
+  const sendFriendMsg = useCallback((payload) => {
+    const ws = wsRef.current;
+    if (!ws || ws.readyState !== WebSocket.OPEN) return;
+    ws.send(JSON.stringify(payload));
+  }, []);
+
+  const friendActions = {
+    request: (toGuestId) => sendFriendMsg({ type: 'friendRequest', toGuestId }),
+    respond: (requestId, accept) => sendFriendMsg({ type: 'friendRespond', requestId, accept }),
+    setLevel: (friendGuestId, level) => sendFriendMsg({ type: 'friendLevel', friendGuestId, level }),
+  };
+
   useEffect(() => {
     return () => {
       clearTimeout(reconnectRef.current);
@@ -125,6 +141,8 @@ export default function App() {
       user={user}
       peers={peers}
       pins={pins}
+      friendState={friendState}
+      friendActions={friendActions}
       wsStatus={wsStatus}
       onPositionUpdate={sendPosition}
       onAddPin={addPin}

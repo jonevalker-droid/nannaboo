@@ -6,7 +6,8 @@ import {
 import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
 import ARView from './ARView';
-import { haversineMeters, formatDistance } from '../lib/geo';
+import FriendsSheet from './FriendsSheet';
+import { haversineMeters, bearingDeg, formatDistance, cardinal } from '../lib/geo';
 
 export const CATEGORY_META = {
   exit:             { emoji: '🚪', label: 'Exits',     color: '#d32f2f' },
@@ -57,12 +58,21 @@ function colorFor(id) {
   return COLORS[h % COLORS.length];
 }
 
-function avatarIcon(color, initial, isMe = false) {
+function avatarIcon(color, initial, isMe = false, isFriend = false) {
   const sz = isMe ? 46 : 38;
   const border = isMe ? '3px solid white' : '2px solid white';
+  const badge = isFriend
+    ? `<div style="
+        position:absolute;bottom:-3px;right:-3px;
+        width:16px;height:16px;background:white;border-radius:50%;
+        display:flex;align-items:center;justify-content:center;
+        font-size:10px;box-shadow:0 1px 4px rgba(0,0,0,.4);
+      ">⭐</div>`
+    : '';
   return L.divIcon({
     className: '',
-    html: `<div style="
+    html: `<div style="position:relative;width:${sz}px;height:${sz}px;">
+      <div style="
       width:${sz}px;height:${sz}px;background:${color};
       border:${border};border-radius:50%;
       display:flex;align-items:center;justify-content:center;
@@ -70,7 +80,7 @@ function avatarIcon(color, initial, isMe = false) {
       font-family:-apple-system,sans-serif;
       box-shadow:0 2px 10px rgba(0,0,0,.45);
       user-select:none;
-    ">${initial.toUpperCase()}</div>`,
+    ">${initial.toUpperCase()}</div>${badge}</div>`,
     iconSize: [sz, sz],
     iconAnchor: [sz / 2, sz / 2],
     popupAnchor: [0, -(sz / 2 + 4)],
@@ -119,7 +129,7 @@ function TapListener({ active, onTap }) {
 }
 
 export default function MapView({
-  user, peers, pins, wsStatus,
+  user, peers, pins, friendState, friendActions, wsStatus,
   onPositionUpdate, onAddPin, onRemovePin,
 }) {
   const [myPos, setMyPos] = useState(null);
@@ -129,6 +139,25 @@ export default function MapView({
   const [pois, setPois] = useState([]);
   const [poiFilter, setPoiFilter] = useState('all');
   const [arTarget, setArTarget] = useState(null);
+  const [showFriends, setShowFriends] = useState(false);
+
+  const friendById = new Map(friendState.friends.map((f) => [f.id, f]));
+  const sentToIds = new Set(friendState.sent.map((r) => r.toGuestId));
+  const receivedFrom = new Map(friendState.received.map((r) => [r.fromGuestId, r]));
+
+  // Friend AR targets track the live peer position instead of a snapshot.
+  const resolveArTarget = () => {
+    if (!arTarget) return null;
+    if (!arTarget.peerId) return arTarget;
+    const p = peers.find((pp) => pp.id === arTarget.peerId);
+    return p && p.lat != null ? { ...arTarget, lat: p.lat, lng: p.lng } : null;
+  };
+  const liveArTarget = resolveArTarget();
+
+  const locateFriend = (peerId) => {
+    const p = peers.find((pp) => pp.id === peerId);
+    if (p) setArTarget({ peerId, name: p.name });
+  };
   const watchId = useRef(null);
   const inputRef = useRef(null);
 
@@ -141,7 +170,14 @@ export default function MapView({
 
   const visiblePois = poiFilter === 'all'
     ? pois
+    : poiFilter === 'friends' ? []
     : pois.filter((p) => p.category === poiFilter);
+
+  // Friends filter narrows the PEER layer to friends who share with me;
+  // every other filter keeps the base everyone-in-group layer untouched.
+  const visiblePeers = poiFilter === 'friends'
+    ? peers.filter((p) => friendById.get(p.id)?.visibleToMe)
+    : peers;
 
   const poiCategories = [...new Set(pois.map((p) => p.category))]
     .sort((a, b) => (a === 'exit' ? -1 : b === 'exit' ? 1 : a.localeCompare(b)));
@@ -201,19 +237,36 @@ export default function MapView({
         >
           🚪 Exit
         </button>
+        <button
+          className="friends-btn"
+          title="Friends"
+          onClick={() => setShowFriends(true)}
+        >
+          👥
+          {friendState.received.length > 0 && (
+            <span className="friends-badge">{friendState.received.length}</span>
+          )}
+        </button>
         <span className={`ws-dot ws-${wsStatus}`} title={wsStatus} />
         <span className="peer-count">
           {peers.length + 1} {peers.length + 1 === 1 ? 'person' : 'people'}
         </span>
       </div>
 
-      {pois.length > 0 && (
+      {(pois.length > 0 || friendState.friends.length > 0) && (
         <div className="poi-filter-bar">
           <button
             className={`poi-chip ${poiFilter === 'all' ? 'active' : ''}`}
             onClick={() => setPoiFilter('all')}
           >
             All
+          </button>
+          <button
+            className={`poi-chip ${poiFilter === 'friends' ? 'active' : ''}`}
+            style={poiFilter === 'friends' ? { background: '#f9a825', borderColor: '#f9a825' } : {}}
+            onClick={() => setPoiFilter(poiFilter === 'friends' ? 'all' : 'friends')}
+          >
+            ⭐ Friends
           </button>
           {poiCategories.map((cat) => {
             const meta = CATEGORY_META[cat] ?? CATEGORY_META.other;
@@ -270,15 +323,50 @@ export default function MapView({
           </>
         )}
 
-        {peers.filter((p) => p.lat != null).map((peer) => (
-          <Marker
-            key={peer.id}
-            position={[peer.lat, peer.lng]}
-            icon={avatarIcon(colorFor(peer.id), peer.name[0])}
-          >
-            <Popup><strong>{peer.name}</strong></Popup>
-          </Marker>
-        ))}
+        {visiblePeers.filter((p) => p.lat != null).map((peer) => {
+          const friend = friendById.get(peer.id);
+          const request = receivedFrom.get(peer.id);
+          return (
+            <Marker
+              key={peer.id}
+              position={[peer.lat, peer.lng]}
+              icon={avatarIcon(colorFor(peer.id), peer.name[0], false, !!friend)}
+            >
+              <Popup>
+                <strong>{friend ? '⭐ ' : ''}{peer.name}</strong>
+                {myPos && (
+                  <>
+                    <br />
+                    <span className="poi-popup-meta">
+                      {formatDistance(haversineMeters(myPos, peer))} · {cardinal(bearingDeg(myPos, peer))}
+                    </span>
+                  </>
+                )}
+                <br />
+                {friend && friend.visibleToMe && (
+                  <button className="poi-ar-btn" onClick={() => locateFriend(peer.id)}>
+                    📷 Point me there
+                  </button>
+                )}
+                {!friend && request && (
+                  <button
+                    className="poi-ar-btn"
+                    onClick={() => friendActions.respond(request.id, true)}
+                  >
+                    ✓ Accept friend request
+                  </button>
+                )}
+                {!friend && !request && (
+                  sentToIds.has(peer.id)
+                    ? <em className="poi-popup-meta">Friend request sent</em>
+                    : <button className="poi-ar-btn" onClick={() => friendActions.request(peer.id)}>
+                        ➕ Add friend
+                      </button>
+                )}
+              </Popup>
+            </Marker>
+          );
+        })}
 
         {visiblePois.map((poi) => {
           const meta = CATEGORY_META[poi.category] ?? CATEGORY_META.other;
@@ -349,10 +437,23 @@ export default function MapView({
         </div>
       )}
 
-      {/* AR camera view */}
-      {arTarget && (
+      {/* Friends panel */}
+      {showFriends && (
+        <FriendsSheet
+          user={user}
+          peers={peers}
+          myPos={myPos}
+          friendState={friendState}
+          friendActions={friendActions}
+          onClose={() => setShowFriends(false)}
+          onLocate={locateFriend}
+        />
+      )}
+
+      {/* AR camera view (POIs use a fixed target; friends track live) */}
+      {liveArTarget && (
         <ARView
-          target={arTarget}
+          target={liveArTarget}
           myPos={myPos}
           onClose={() => setArTarget(null)}
         />
