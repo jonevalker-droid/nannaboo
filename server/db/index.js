@@ -55,6 +55,10 @@ export function getPool() {
   return pool;
 }
 
+export function getDefaultVenueId() {
+  return defaultVenueId;
+}
+
 // One active event per group code, created lazily on first join.
 export async function ensureEventForGroup(groupCode) {
   if (!enabled) return null;

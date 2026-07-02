@@ -5,6 +5,46 @@ import {
 } from 'react-leaflet';
 import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
+import ARView from './ARView';
+import { haversineMeters, formatDistance } from '../lib/geo';
+
+export const CATEGORY_META = {
+  exit:             { emoji: '🚪', label: 'Exits',     color: '#d32f2f' },
+  restroom:         { emoji: '🚻', label: 'Restrooms', color: '#7b1fa2' },
+  medic:            { emoji: '⛑️', label: 'Medic',     color: '#c62828' },
+  food:             { emoji: '🍔', label: 'Food',      color: '#ef6c00' },
+  drink:            { emoji: '🥤', label: 'Drinks',    color: '#0288d1' },
+  smoking:          { emoji: '🚬', label: 'Smoking',   color: '#616161' },
+  atm:              { emoji: '💵', label: 'ATM',       color: '#2e7d32' },
+  lost_and_found:   { emoji: '🧸', label: 'Lost & Found', color: '#6d4c41' },
+  info:             { emoji: 'ℹ️', label: 'Info',      color: '#1565c0' },
+  charging:         { emoji: '🔌', label: 'Charging',  color: '#455a64' },
+  merch:            { emoji: '🛍️', label: 'Merch',     color: '#ad1457' },
+  coat_check:       { emoji: '🧥', label: 'Coat Check', color: '#5d4037' },
+  accessible_route: { emoji: '♿', label: 'Accessible', color: '#00695c' },
+  parking:          { emoji: '🅿️', label: 'Parking',   color: '#283593' },
+  rideshare:        { emoji: '🚗', label: 'Rideshare', color: '#4527a0' },
+  water:            { emoji: '💧', label: 'Water',     color: '#0097a7' },
+  quiet_room:       { emoji: '🤫', label: 'Quiet Room', color: '#37474f' },
+  other:            { emoji: '📌', label: 'Other',     color: '#546e7a' },
+};
+
+function poiIcon(category) {
+  const meta = CATEGORY_META[category] ?? CATEGORY_META.other;
+  return L.divIcon({
+    className: '',
+    html: `<div style="
+      width:34px;height:34px;background:white;
+      border:3px solid ${meta.color};border-radius:50%;
+      display:flex;align-items:center;justify-content:center;
+      font-size:17px;box-shadow:0 2px 8px rgba(0,0,0,.35);
+      user-select:none;
+    ">${meta.emoji}</div>`,
+    iconSize: [34, 34],
+    iconAnchor: [17, 17],
+    popupAnchor: [0, -20],
+  });
+}
 
 const COLORS = [
   '#e74c3c', '#3498db', '#2ecc71', '#f39c12',
@@ -86,8 +126,32 @@ export default function MapView({
   const [placing, setPlacing] = useState(false);
   const [pinLabel, setPinLabel] = useState('');
   const [pendingLL, setPendingLL] = useState(null);
+  const [pois, setPois] = useState([]);
+  const [poiFilter, setPoiFilter] = useState('all');
+  const [arTarget, setArTarget] = useState(null);
   const watchId = useRef(null);
   const inputRef = useRef(null);
+
+  useEffect(() => {
+    fetch('/api/pois')
+      .then((r) => r.json())
+      .then((d) => setPois(d.pois ?? []))
+      .catch((err) => console.warn('pois:', err));
+  }, []);
+
+  const visiblePois = poiFilter === 'all'
+    ? pois
+    : pois.filter((p) => p.category === poiFilter);
+
+  const poiCategories = [...new Set(pois.map((p) => p.category))]
+    .sort((a, b) => (a === 'exit' ? -1 : b === 'exit' ? 1 : a.localeCompare(b)));
+
+  const nearestExit = () => {
+    const exits = pois.filter((p) => p.category === 'exit');
+    if (!exits.length || !myPos) return null;
+    return exits.reduce((best, p) =>
+      haversineMeters(myPos, p) < haversineMeters(myPos, best) ? p : best);
+  };
 
   useEffect(() => {
     watchId.current = navigator.geolocation.watchPosition(
@@ -126,11 +190,46 @@ export default function MapView({
     <div className="map-screen">
       <div className="status-bar">
         <span className="group-label">{user.groupCode}</span>
+        <button
+          className="exit-ar-btn"
+          title="Point me to the nearest exit"
+          onClick={() => {
+            const exit = nearestExit();
+            if (exit) setArTarget(exit);
+            else alert(myPos ? 'No exits mapped yet' : 'Waiting for GPS fix…');
+          }}
+        >
+          🚪 Exit
+        </button>
         <span className={`ws-dot ws-${wsStatus}`} title={wsStatus} />
         <span className="peer-count">
           {peers.length + 1} {peers.length + 1 === 1 ? 'person' : 'people'}
         </span>
       </div>
+
+      {pois.length > 0 && (
+        <div className="poi-filter-bar">
+          <button
+            className={`poi-chip ${poiFilter === 'all' ? 'active' : ''}`}
+            onClick={() => setPoiFilter('all')}
+          >
+            All
+          </button>
+          {poiCategories.map((cat) => {
+            const meta = CATEGORY_META[cat] ?? CATEGORY_META.other;
+            return (
+              <button
+                key={cat}
+                className={`poi-chip ${poiFilter === cat ? 'active' : ''}`}
+                style={poiFilter === cat ? { background: meta.color, borderColor: meta.color } : {}}
+                onClick={() => setPoiFilter(poiFilter === cat ? 'all' : cat)}
+              >
+                {meta.emoji} {meta.label}
+              </button>
+            );
+          })}
+        </div>
+      )}
 
       <MapContainer
         center={myPos ? [myPos.lat, myPos.lng] : fallbackCenter}
@@ -181,6 +280,40 @@ export default function MapView({
           </Marker>
         ))}
 
+        {visiblePois.map((poi) => {
+          const meta = CATEGORY_META[poi.category] ?? CATEGORY_META.other;
+          return (
+            <Marker
+              key={poi.id}
+              position={[poi.lat, poi.lng]}
+              icon={poiIcon(poi.category)}
+            >
+              <Popup>
+                <strong>{meta.emoji} {poi.name}</strong>
+                <br />
+                <span className="poi-popup-meta">
+                  {meta.label}
+                  {poi.floorLevel && ` · Floor ${poi.floorLevel}`}
+                  {myPos && ` · ${formatDistance(haversineMeters(myPos, poi))}`}
+                </span>
+                {poi.liveStatus && (
+                  <>
+                    <br />
+                    <em className="poi-popup-status">{poi.liveStatus}</em>
+                  </>
+                )}
+                <br />
+                <button
+                  className="poi-ar-btn"
+                  onClick={() => setArTarget(poi)}
+                >
+                  📷 Point me there
+                </button>
+              </Popup>
+            </Marker>
+          );
+        })}
+
         {pins.map((pin) => (
           <Marker
             key={pin.id}
@@ -214,6 +347,15 @@ export default function MapView({
           Tap the map to place a pin
           <button onClick={() => setPlacing(false)}>Cancel</button>
         </div>
+      )}
+
+      {/* AR camera view */}
+      {arTarget && (
+        <ARView
+          target={arTarget}
+          myPos={myPos}
+          onClose={() => setArTarget(null)}
+        />
       )}
 
       {/* Label prompt sheet */}

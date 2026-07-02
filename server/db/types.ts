@@ -28,7 +28,8 @@ export interface GeoPolygon {
 export type PoiCategory =
   | 'restroom' | 'exit' | 'medic' | 'food' | 'drink' | 'smoking' | 'atm'
   | 'lost_and_found' | 'info' | 'charging' | 'merch' | 'coat_check'
-  | 'accessible_route' | 'parking' | 'rideshare' | 'water' | 'quiet_room';
+  | 'accessible_route' | 'parking' | 'rideshare' | 'water' | 'quiet_room'
+  | 'other';
 
 export type ConsentScope =
   | 'venue_safety_network'       // anonymous presence visible to venue safety ops
@@ -85,6 +86,8 @@ export interface Poi {
   location: LatLng;
   /** Free text, e.g. 'long line', 'closed until 6pm'. */
   liveStatus: string | null;
+  /** Optional indoor floor/level reference, e.g. '1', 'B1', 'Mezzanine'. */
+  floorLevel: string | null;
   createdAt: IsoTimestamp;
   updatedAt: IsoTimestamp;
 }

@@ -5,6 +5,7 @@ import { randomUUID } from 'crypto';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import * as db from './db/index.js';
+import poisRouter from './routes/pois.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PORT = process.env.PORT || 3001;
@@ -12,6 +13,10 @@ const PORT = process.env.PORT || 3001;
 const app = express();
 const server = createServer(app);
 const wss = new WebSocketServer({ server, path: '/ws' });
+
+// API routes must come before the static catchall
+app.use(express.json());
+app.use('/api/pois', poisRouter);
 
 // Serve React build in production
 const distPath = path.join(__dirname, '../client/dist');

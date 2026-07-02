@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import JoinForm from './components/JoinForm';
+import NearestExits from './components/NearestExits';
 import MapView from './components/MapView';
 import './App.css';
 
@@ -69,9 +70,13 @@ export default function App() {
     };
     userRef.current = userData;
     setUser(userData);
-    setPhase('map');
+    // Exit-first safety screen comes before the friend map; the WebSocket
+    // connects underneath it so the map is live the moment they continue.
+    setPhase('exits');
     connect(userData);
   }, [connect]);
+
+  const handleExitsSeen = useCallback(() => setPhase('map'), []);
 
   const sendPosition = useCallback((lat, lng, accuracy, heading) => {
     const ws = wsRef.current;
@@ -109,6 +114,10 @@ export default function App() {
 
   if (phase === 'join') {
     return <JoinForm onJoin={handleJoin} />;
+  }
+
+  if (phase === 'exits') {
+    return <NearestExits onContinue={handleExitsSeen} />;
   }
 
   return (
