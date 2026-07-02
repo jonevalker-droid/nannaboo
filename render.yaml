@@ -17,3 +17,9 @@ services:
         fromDatabase:
           name: nannaboo-db
           property: connectionString
+      # Guards POI write routes (/api/pois POST/PUT/DELETE + seed-demo).
+      # sync: false -> Render prompts for the value on Blueprint sync; pick
+      # something short enough to type on a phone. Repo is public, so the
+      # value must never be committed here.
+      - key: ADMIN_KEY
+        sync: false
