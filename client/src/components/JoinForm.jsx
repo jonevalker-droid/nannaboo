@@ -2,7 +2,7 @@ import { useState } from 'react';
 
 export const VISIBILITY_OPTIONS = [
   { value: 'public', icon: '🌐', label: 'Everyone', hint: 'Anyone at this event can see you on the map' },
-  { value: 'friends_only', icon: '⭐', label: 'Friends', hint: 'Only friends you’ve accepted can see you' },
+  { value: 'friends_only', icon: '⭐', label: 'Friends', hint: 'Only friends you’ve accepted can see or even find you — you add them, not the other way around' },
   { value: 'off', icon: '🙈', label: 'Hidden', hint: 'Nobody can see you on the map' },
 ];
 

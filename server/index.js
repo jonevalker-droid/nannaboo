@@ -150,10 +150,12 @@ function canSeePosition(viewerId, g) {
 }
 
 // groupState is per-viewer since visibility tiers (4b): each recipient gets
-// only the positions they may see. 'off' guests are omitted entirely;
-// friends_only guests keep their name in the list (so friend requests still
-// work) with position nulled for non-friends. The viewer's own entry carries
-// visibility + inside so the client can render its own privacy state.
+// only the positions they may see. 'off' guests are omitted entirely, and so
+// are friends_only guests for anyone who isn't an accepted friend — not even
+// their name is discoverable by strangers. Accepted friends keep them listed
+// (the friend link + geofence still decide whether the position shows).
+// Friendship therefore forms by the friends_only guest reaching out first.
+// The viewer's own entry carries visibility + inside for the privacy UI.
 function guestsFor(viewer, group) {
   const out = [];
   for (const g of group.guests.values()) {
@@ -163,6 +165,8 @@ function guestsFor(viewer, group) {
       continue;
     }
     if (g.visibility === 'off') continue;
+    if (g.visibility === 'friends_only'
+        && !friendVisCache.get(viewer.id)?.has(g.id)) continue;
     if (canSeePosition(viewer.id, g)) {
       const { visibility: _v, inside: _i, ...visible } = pub;
       out.push(visible);
