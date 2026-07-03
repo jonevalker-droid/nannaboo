@@ -38,6 +38,13 @@ export type ConsentScope =
 
 export type SharingLevel = 'off' | 'this_event_only' | 'always';
 
+/**
+ * Guest-level default visibility toward OTHER GUESTS (staff safety views are
+ * governed by ConsentScope, not this). A friend_link's SharingLevel can still
+ * override down toward a specific friend.
+ */
+export type VisibilityMode = 'public' | 'friends_only' | 'off';
+
 export type PositionSource = 'ble' | 'wifi' | 'cellular' | 'imu_fused';
 
 export type StaffRole = 'admin' | 'promoter' | 'security';
@@ -96,6 +103,7 @@ export interface Guest {
   /** Client-generated UUID (localStorage nb_guest_id), validated server-side. */
   id: Uuid;
   displayName: string;
+  visibilityMode: VisibilityMode;
   createdAt: IsoTimestamp;
   lastSeenAt: IsoTimestamp;
 }

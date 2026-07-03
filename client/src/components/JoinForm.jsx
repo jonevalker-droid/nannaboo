@@ -1,8 +1,19 @@
 import { useState } from 'react';
 
+export const VISIBILITY_OPTIONS = [
+  { value: 'public', icon: '🌐', label: 'Everyone', hint: 'Anyone at this event can see you on the map' },
+  { value: 'friends_only', icon: '⭐', label: 'Friends', hint: 'Only friends you’ve accepted can see you' },
+  { value: 'off', icon: '🙈', label: 'Hidden', hint: 'Nobody can see you on the map' },
+];
+
 export default function JoinForm({ onJoin }) {
   const [name, setName] = useState(localStorage.getItem('nb_name') || '');
   const [groupCode, setGroupCode] = useState(localStorage.getItem('nb_group') || '');
+  const [visibility, setVisibility] = useState(
+    VISIBILITY_OPTIONS.some((o) => o.value === localStorage.getItem('nb_visibility'))
+      ? localStorage.getItem('nb_visibility')
+      : 'public'
+  );
   const [error, setError] = useState('');
 
   const handleSubmit = (e) => {
@@ -13,7 +24,8 @@ export default function JoinForm({ onJoin }) {
     if (!g) { setError('Enter a group code'); return; }
     localStorage.setItem('nb_name', n);
     localStorage.setItem('nb_group', g);
-    onJoin(n, g);
+    localStorage.setItem('nb_visibility', visibility);
+    onJoin(n, g, visibility);
   };
 
   return (
@@ -46,6 +58,27 @@ export default function JoinForm({ onJoin }) {
               spellCheck={false}
             />
           </label>
+          <fieldset className="visibility-fieldset">
+            <legend>Who can see you on the map?</legend>
+            <div className="visibility-options" role="radiogroup" aria-label="Visibility">
+              {VISIBILITY_OPTIONS.map((o) => (
+                <button
+                  key={o.value}
+                  type="button"
+                  role="radio"
+                  aria-checked={visibility === o.value}
+                  className={`visibility-pill ${visibility === o.value ? 'active' : ''}`}
+                  onClick={() => setVisibility(o.value)}
+                >
+                  {o.icon} {o.label}
+                </button>
+              ))}
+            </div>
+            <p className="visibility-hint">
+              {VISIBILITY_OPTIONS.find((o) => o.value === visibility).hint}. You
+              can change this anytime.
+            </p>
+          </fieldset>
           {error && <p className="error">{error}</p>}
           <button type="submit">Find my group →</button>
         </form>

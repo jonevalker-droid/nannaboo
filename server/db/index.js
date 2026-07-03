@@ -90,40 +90,92 @@ export async function ensureEventForGroup(groupCode) {
   }
 }
 
-export async function upsertGuest(guestId, name) {
+const VISIBILITY_MODES = ['public', 'friends_only', 'off'];
+
+export async function upsertGuest(guestId, name, visibility) {
   if (!enabled || !isUuid(guestId)) return;
+  const mode = VISIBILITY_MODES.includes(visibility) ? visibility : 'public';
   try {
     await pool.query(
-      `INSERT INTO guest (id, display_name)
-       VALUES ($1, $2)
+      `INSERT INTO guest (id, display_name, visibility_mode)
+       VALUES ($1, $2, $3)
        ON CONFLICT (id) DO UPDATE
-         SET display_name = EXCLUDED.display_name, last_seen_at = now()`,
-      [guestId, name]
+         SET display_name = EXCLUDED.display_name,
+             visibility_mode = EXCLUDED.visibility_mode,
+             last_seen_at = now()`,
+      [guestId, name, mode]
     );
   } catch (err) {
     logError('upsertGuest', err);
   }
 }
 
-// Joining a group and broadcasting your position to it is the product's
-// consent action in Phase 1, so record it as a friend_sharing grant — this
-// keeps Phase 1 data valid under the Phase 2+ access-control rules.
-export async function grantFriendSharing(guestId, eventId) {
-  if (!enabled || !isUuid(guestId) || !eventId) return;
+export async function setGuestVisibility(guestId, visibility) {
+  if (!enabled || !isUuid(guestId) || !VISIBILITY_MODES.includes(visibility)) return;
   try {
     await pool.query(
-      `INSERT INTO consent_grant (guest_id, event_id, scope)
-       SELECT $1, $2, 'friend_sharing'
-       WHERE NOT EXISTS (
-         SELECT 1 FROM consent_grant
-         WHERE guest_id = $1 AND event_id = $2 AND scope = 'friend_sharing'
-           AND revoked_at IS NULL
-           AND (expires_at IS NULL OR expires_at > now())
-       )`,
-      [guestId, eventId]
+      'UPDATE guest SET visibility_mode = $2 WHERE id = $1',
+      [guestId, visibility]
     );
   } catch (err) {
-    logError('grantFriendSharing', err);
+    logError('setGuestVisibility', err);
+  }
+}
+
+// Joining a group and broadcasting your position to it is the product's
+// consent action in Phase 1, so record it as a friend_sharing grant plus a
+// venue_safety_network grant (anonymous position-only dot for venue safety
+// ops — the guest-facing visibility_mode deliberately does NOT affect that
+// layer; identified_security_roster stays a separate explicit opt-in).
+export async function grantJoinConsents(guestId, eventId) {
+  if (!enabled || !isUuid(guestId) || !eventId) return;
+  for (const scope of ['friend_sharing', 'venue_safety_network']) {
+    try {
+      await pool.query(
+        `INSERT INTO consent_grant (guest_id, event_id, scope)
+         SELECT $1, $2, $3::consent_scope
+         WHERE NOT EXISTS (
+           SELECT 1 FROM consent_grant
+           WHERE guest_id = $1 AND event_id = $2 AND scope = $3::consent_scope
+             AND revoked_at IS NULL
+             AND (expires_at IS NULL OR expires_at > now())
+         )`,
+        [guestId, eventId, scope]
+      );
+    } catch (err) {
+      logError('grantJoinConsents', err);
+    }
+  }
+}
+
+// ---- venue geofence persistence (boundary lives on the venue row) ----
+
+export async function loadVenueBoundary() {
+  if (!enabled) return null;
+  try {
+    const { rows } = await pool.query(
+      'SELECT ST_AsGeoJSON(boundary::geometry) AS gj FROM venue WHERE id = $1',
+      [defaultVenueId]
+    );
+    return rows[0]?.gj ? JSON.parse(rows[0].gj) : null;
+  } catch (err) {
+    logError('loadVenueBoundary', err);
+    return null;
+  }
+}
+
+export async function saveVenueBoundary(polygon) {
+  if (!enabled) return;
+  try {
+    await pool.query(
+      `UPDATE venue
+       SET boundary = CASE WHEN $2::text IS NULL THEN NULL
+                           ELSE ST_GeomFromGeoJSON($2)::geography END
+       WHERE id = $1`,
+      [defaultVenueId, polygon ? JSON.stringify(polygon) : null]
+    );
+  } catch (err) {
+    logError('saveVenueBoundary', err);
   }
 }
 

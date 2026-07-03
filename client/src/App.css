@@ -254,6 +254,99 @@ html, body, #root {
   cursor: pointer;
 }
 
+/* ─── Visibility tier picker (JoinForm + FriendsSheet) ────────── */
+
+.visibility-fieldset {
+  border: none;
+  padding: 0;
+  margin: 14px 0 0;
+}
+
+.visibility-fieldset legend {
+  font-size: 13px;
+  font-weight: 600;
+  color: #444;
+  padding: 0;
+  margin-bottom: 8px;
+}
+
+.visibility-options {
+  display: flex;
+  gap: 6px;
+}
+
+.visibility-pill {
+  flex: 1;
+  padding: 8px 4px;
+  border: 1.5px solid #d0d0d0;
+  border-radius: 18px;
+  background: white;
+  color: #444;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.visibility-pill.active {
+  background: #1a73e8;
+  border-color: #1a73e8;
+  color: white;
+}
+
+.visibility-hint {
+  font-size: 12px;
+  color: #777;
+  margin: 8px 0 0;
+  min-height: 2.4em;
+}
+
+/* ─── Geofence / hidden-state banner ──────────────────────────── */
+
+.fence-banner {
+  background: #ede7f6;
+  color: #4527a0;
+  font-size: 13px;
+  font-weight: 600;
+  padding: 8px 14px;
+  text-align: center;
+  z-index: 900;
+  flex-shrink: 0;
+  border-bottom: 1px solid rgba(0, 0, 0, 0.08);
+}
+
+/* ─── Social connect stubs (UI only) ──────────────────────────── */
+
+.social-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}
+
+.social-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  padding: 10px 8px;
+  border: none;
+  border-radius: 10px;
+  font-size: 13px;
+  font-weight: 700;
+  font-family: inherit;
+  cursor: pointer;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.15);
+}
+
+.social-btn:disabled {
+  opacity: 0.75;
+  cursor: wait;
+}
+
+.social-btn svg {
+  flex-shrink: 0;
+}
+
 /* ─── Placing-mode banner ─────────────────────────────────────── */
 
 .placing-banner {

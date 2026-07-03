@@ -6,7 +6,10 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import * as db from './db/index.js';
 import * as friendStore from './friendStore.js';
+import * as geofence from './geofence.js';
 import poisRouter from './routes/pois.js';
+import venueRouter from './routes/venue.js';
+import createSecurityRouter from './routes/security.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PORT = process.env.PORT || 3001;
@@ -18,6 +21,10 @@ const wss = new WebSocketServer({ server, path: '/ws' });
 // API routes must come before the static catchall
 app.use(express.json());
 app.use('/api/pois', poisRouter);
+app.use('/api/venue', venueRouter);
+app.use('/api/security', createSecurityRouter({
+  getLiveGroup: (code) => groups.get(code),
+}));
 
 // Serve React build in production
 const distPath = path.join(__dirname, '../client/dist');
@@ -40,6 +47,13 @@ function getOrCreateGroup(code) {
 // Live connections by guest id (friend updates target individuals, not groups)
 const sessions = new Map(); // guestId -> { ws, groupCode }
 
+// Per-viewer friend visibility, mirrored from friendStore whenever a
+// friendState is computed (join + every friend op), so groupState broadcasts
+// can apply friend rules synchronously: viewerId -> Map(friendId -> visibleToMe)
+const friendVisCache = new Map();
+
+const VISIBILITY_MODES = ['public', 'friends_only', 'off'];
+
 // Event identity for friend-link scoping: the DB event uuid when persistence
 // is up, else the group code (in-memory mode only compares these for equality).
 async function resolveEventKey(groupCode) {
@@ -59,6 +73,10 @@ async function sendFriendState(targetGuestId) {
     const eventKey = groups.get(sess.groupCode)?.eventId
       ?? await resolveEventKey(sess.groupCode);
     const state = await friendStore.getFriendState(targetGuestId, eventKey);
+    friendVisCache.set(
+      targetGuestId,
+      new Map(state.friends.map((f) => [f.id, f.visibleToMe]))
+    );
     sess.ws.send(JSON.stringify({ type: 'friendState', ...state }));
   } catch (err) {
     console.error('[friends] friendState failed:', err.message);
@@ -90,16 +108,20 @@ async function handleFriendOp(msg, guestId, groupCode) {
 
   await sendFriendState(guestId);
   if (other) await sendFriendState(other); // their view changed too
+  // Friendship/level changes alter who may see whom on the map right now
+  // (friends_only guests appear to new friends; a level set to 'off'
+  // overrides a public guest down) — re-send the filtered group state.
+  broadcastGroup(group);
 }
 
 // Persist the guest/event, and after a server restart reload the group's pins
 // from the DB (merged behind any pins added since, capped at 3 like addPin).
-async function persistJoin(group, groupCode, guestId, name) {
-  db.upsertGuest(guestId, name);
+async function persistJoin(group, groupCode, guestId, name, visibility) {
+  db.upsertGuest(guestId, name, visibility);
   const eventId = await db.ensureEventForGroup(groupCode);
   if (!eventId) return;
   group.eventId = eventId;
-  db.grantFriendSharing(guestId, eventId);
+  db.grantJoinConsents(guestId, eventId);
   if (group.hydrated) return;
   group.hydrated = true;
   const stored = await db.loadPins(eventId);
@@ -107,22 +129,59 @@ async function persistJoin(group, groupCode, guestId, name) {
   const restored = stored.filter(p => !have.has(p.id)).map(p => ({ ...p, groupCode }));
   if (restored.length) {
     group.pins = [...restored, ...group.pins].slice(-3);
-    broadcast(group, groupStatePayload(group));
+    broadcastGroup(group);
   }
 }
 
-function groupStatePayload(group) {
-  return {
-    type: 'groupState',
-    guests: [...group.guests.values()].map(({ ws: _ws, ...g }) => g),
-    pins: group.pins,
-  };
+// May VIEWER see GUEST's position right now? (Both are live group members.)
+// - visibility 'off' hides in every guest layer.
+// - Positions only show while inside the venue geofence (no fence = inside).
+// - An existing friend link overrides down in ANY mode: the sharer's
+//   per-friend sharing_level decides, even if their general mode is public.
+// - Otherwise the guest-level mode decides: public -> anyone at the event,
+//   friends_only -> nobody who isn't a friend.
+function canSeePosition(viewerId, g) {
+  if (g.lat == null) return false;
+  if (g.visibility === 'off') return false;
+  if (!geofence.contains(g.lat, g.lng)) return false;
+  const friendVis = friendVisCache.get(viewerId)?.get(g.id);
+  if (friendVis !== undefined) return friendVis;
+  return g.visibility === 'public';
 }
 
-function broadcast(group, payload) {
-  const msg = JSON.stringify(payload);
+// groupState is per-viewer since visibility tiers (4b): each recipient gets
+// only the positions they may see. 'off' guests are omitted entirely;
+// friends_only guests keep their name in the list (so friend requests still
+// work) with position nulled for non-friends. The viewer's own entry carries
+// visibility + inside so the client can render its own privacy state.
+function guestsFor(viewer, group) {
+  const out = [];
   for (const g of group.guests.values()) {
-    if (g.ws.readyState === 1) g.ws.send(msg);
+    const { ws: _ws, ...pub } = g;
+    if (g.id === viewer.id) {
+      out.push(pub);
+      continue;
+    }
+    if (g.visibility === 'off') continue;
+    if (canSeePosition(viewer.id, g)) {
+      const { visibility: _v, inside: _i, ...visible } = pub;
+      out.push(visible);
+    } else {
+      const { lat: _lat, lng: _lng, accuracy: _a, heading: _h, visibility: _v, inside: _i, ...hidden } = pub;
+      out.push({ ...hidden, lat: null, lng: null, accuracy: null, heading: null });
+    }
+  }
+  return out;
+}
+
+function broadcastGroup(group) {
+  for (const viewer of group.guests.values()) {
+    if (viewer.ws.readyState !== 1) continue;
+    viewer.ws.send(JSON.stringify({
+      type: 'groupState',
+      guests: guestsFor(viewer, group),
+      pins: group.pins,
+    }));
   }
 }
 
@@ -145,6 +204,7 @@ wss.on('connection', (ws) => {
       guestId = db.isUuid(msg.guestId) ? msg.guestId : randomUUID();
       groupCode = String(msg.groupCode || '').toUpperCase().trim();
       const name = String(msg.name || 'Unknown').trim().slice(0, 40);
+      const visibility = VISIBILITY_MODES.includes(msg.visibility) ? msg.visibility : 'public';
       if (!groupCode) return;
 
       const group = getOrCreateGroup(groupCode);
@@ -152,18 +212,24 @@ wss.on('connection', (ws) => {
       if (existing && existing.ws !== ws) existing.ws.terminate();
 
       group.guests.set(guestId, {
-        ws, id: guestId, name, groupCode,
+        ws, id: guestId, name, groupCode, visibility,
         lat: null, lng: null, accuracy: null, heading: null,
+        inside: null, // unknown until the first position fix
         lastSeen: Date.now(),
       });
 
       sessions.set(guestId, { ws, groupCode });
       friendStore.rememberName(guestId, name);
 
-      broadcast(group, groupStatePayload(group));
-      persistJoin(group, groupCode, guestId, name)
+      broadcastGroup(group);
+      persistJoin(group, groupCode, guestId, name, visibility)
         .catch(err => console.error('[db] persistJoin failed:', err.message));
-      sendFriendState(guestId);
+      // Once the friend cache is warm, re-send group state so friends_only
+      // friends' positions appear immediately, not on the next position tick.
+      sendFriendState(guestId).then(() => {
+        const g = groups.get(groupCode);
+        if (g?.guests.has(guestId)) broadcastGroup(g);
+      });
       return;
     }
 
@@ -178,9 +244,22 @@ wss.on('connection', (ws) => {
       guest.lng = msg.lng;
       guest.accuracy = msg.accuracy;
       guest.heading = msg.heading ?? null;
+      // Geofence check per update: leaving the fence hides the guest from
+      // other guests automatically; coming back shows them again.
+      guest.inside = typeof msg.lat === 'number' && typeof msg.lng === 'number'
+        ? geofence.contains(msg.lat, msg.lng)
+        : null;
       guest.lastSeen = Date.now();
-      broadcast(group, groupStatePayload(group));
+      broadcastGroup(group);
       db.recordPositionFix(guestId, group.eventId, msg);
+    }
+
+    if (msg.type === 'setVisibility') {
+      const guest = group.guests.get(guestId);
+      if (!guest || !VISIBILITY_MODES.includes(msg.visibility)) return;
+      guest.visibility = msg.visibility;
+      db.setGuestVisibility(guestId, msg.visibility);
+      broadcastGroup(group);
     }
 
     if (msg.type === 'addPin') {
@@ -198,13 +277,13 @@ wss.on('connection', (ws) => {
         createdAt: Date.now(),
       };
       group.pins.push(pin);
-      broadcast(group, groupStatePayload(group));
+      broadcastGroup(group);
       db.savePin(group.eventId, pin);
     }
 
     if (msg.type === 'removePin') {
       group.pins = group.pins.filter(p => p.id !== msg.pinId);
-      broadcast(group, groupStatePayload(group));
+      broadcastGroup(group);
       db.deletePin(msg.pinId);
     }
 
@@ -216,7 +295,10 @@ wss.on('connection', (ws) => {
 
   ws.on('close', () => {
     if (!guestId || !groupCode) return;
-    if (sessions.get(guestId)?.ws === ws) sessions.delete(guestId);
+    if (sessions.get(guestId)?.ws === ws) {
+      sessions.delete(guestId);
+      friendVisCache.delete(guestId);
+    }
     const group = groups.get(groupCode);
     if (!group) return;
     // A reconnect may already have replaced this entry with a live socket
@@ -225,7 +307,7 @@ wss.on('connection', (ws) => {
     // still connected, but positions dropped and invisible to the group.
     if (group.guests.get(guestId)?.ws !== ws) return;
     group.guests.delete(guestId);
-    broadcast(group, groupStatePayload(group));
+    broadcastGroup(group);
   });
 
   ws.on('error', () => ws.terminate());
@@ -251,5 +333,12 @@ setInterval(() => {
 
 // Listen first so the live map is up even if the DB is slow or down;
 // db.init() runs migrations and enables write-through when it succeeds.
+// The venue geofence hydrates from the DB once it's up (in-memory mode keeps
+// whatever was last PUT to /api/venue/boundary this process).
 server.listen(PORT, () => console.log(`NannaBoo running on :${PORT}`));
-db.init();
+db.init().then(async () => {
+  const boundary = await db.loadVenueBoundary();
+  if (boundary && geofence.setBoundary(boundary)) {
+    console.log('[venue] geofence boundary loaded from DB');
+  }
+});

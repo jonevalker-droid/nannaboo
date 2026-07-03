@@ -137,7 +137,9 @@ function TapListener({ active, onTap }) {
 
 export default function MapView({
   user, peers, pins, friendState, friendActions, wsStatus,
-  myPos, geoStatus, geoDetail, onGeoRetry, onAddPin, onRemovePin,
+  myPos, geoStatus, geoDetail, onGeoRetry,
+  visibility, onChangeVisibility, insideVenue,
+  onAddPin, onRemovePin,
 }) {
   const [placing, setPlacing] = useState(false);
   const [pinLabel, setPinLabel] = useState('');
@@ -304,6 +306,19 @@ export default function MapView({
         </div>
       )}
 
+      {/* Own privacy state: the server decides what others see; these banners
+          just tell the guest why they may currently be invisible. */}
+      {visibility === 'off' && (
+        <div className="fence-banner">
+          🙈 You're hidden from other guests — change it in the 👥 panel
+        </div>
+      )}
+      {visibility !== 'off' && insideVenue === false && (
+        <div className="fence-banner">
+          🚧 You're outside the venue — other guests can't see you until you're back inside
+        </div>
+      )}
+
       <MapContainer
         center={contextCenter ? [contextCenter.lat, contextCenter.lng] : [20, 0]}
         zoom={contextCenter ? 15 : 2}
@@ -465,6 +480,8 @@ export default function MapView({
           myPos={myPos}
           friendState={friendState}
           friendActions={friendActions}
+          visibility={visibility}
+          onChangeVisibility={onChangeVisibility}
           onClose={() => setShowFriends(false)}
           onLocate={locateFriend}
         />

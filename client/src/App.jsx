@@ -28,6 +28,8 @@ export default function App() {
   const [pins, setPins] = useState([]);
   const [friendState, setFriendState] = useState({ friends: [], sent: [], received: [] });
   const [wsStatus, setWsStatus] = useState('disconnected');
+  const [visibility, setVisibility] = useState('public');
+  const [insideVenue, setInsideVenue] = useState(null); // null until server has a fix + fence
   const [myPos, setMyPos] = useState(null);
   const [geoStatus, setGeoStatus] = useState('locating'); // locating | ok | denied | unavailable
   const [geoDetail, setGeoDetail] = useState(null); // last error message, shown in the banner
@@ -53,6 +55,7 @@ export default function App() {
         guestId: userData.id,
         name: userData.name,
         groupCode: userData.groupCode,
+        visibility: userData.visibility,
       }));
     };
 
@@ -61,6 +64,9 @@ export default function App() {
       if (msg.type === 'groupState') {
         setPeers(msg.guests.filter((g) => g.id !== userData.id));
         setPins(msg.pins);
+        // Own entry carries the geofence verdict for MY position.
+        const me = msg.guests.find((g) => g.id === userData.id);
+        setInsideVenue(me?.inside ?? null);
       }
       if (msg.type === 'friendState') {
         setFriendState({ friends: msg.friends, sent: msg.sent, received: msg.received });
@@ -207,14 +213,16 @@ export default function App() {
     };
   }, [retryGeo]);
 
-  const handleJoin = useCallback((name, groupCode) => {
+  const handleJoin = useCallback((name, groupCode, chosenVisibility) => {
     const userData = {
       id: getOrCreateGuestId(),
       name,
       groupCode: groupCode.toUpperCase().trim(),
+      visibility: chosenVisibility,
     };
     userRef.current = userData;
     setUser(userData);
+    setVisibility(chosenVisibility);
     // Exit-first safety screen comes before the friend map; the WebSocket
     // and GPS watch start underneath it so the map is live — and our position
     // already broadcasting — the moment they continue.
@@ -254,6 +262,15 @@ export default function App() {
     setLevel: (friendGuestId, level) => sendFriendMsg({ type: 'friendLevel', friendGuestId, level }),
   };
 
+  // Guest-level visibility tier, editable anytime (server enforces it; the
+  // localStorage copy + userRef keep it across reloads and WS reconnects).
+  const changeVisibility = useCallback((mode) => {
+    setVisibility(mode);
+    localStorage.setItem('nb_visibility', mode);
+    if (userRef.current) userRef.current = { ...userRef.current, visibility: mode };
+    sendFriendMsg({ type: 'setVisibility', visibility: mode });
+  }, [sendFriendMsg]);
+
   useEffect(() => {
     return () => {
       clearTimeout(reconnectRef.current);
@@ -285,6 +302,9 @@ export default function App() {
       geoStatus={geoStatus}
       geoDetail={geoDetail}
       onGeoRetry={retryGeo}
+      visibility={visibility}
+      onChangeVisibility={changeVisibility}
+      insideVenue={insideVenue}
       onAddPin={addPin}
       onRemovePin={removePin}
     />
