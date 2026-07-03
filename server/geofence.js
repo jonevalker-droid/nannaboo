@@ -39,8 +39,13 @@ export function isValidPolygon(p) {
  */
 export function contains(lat, lng) {
   if (!boundary) return true;
+  return polygonContains(boundary, lat, lng);
+}
+
+/** Same ray cast against an arbitrary GeoJSON Polygon (zones use this). */
+export function polygonContains(polygon, lat, lng) {
   if (typeof lat !== 'number' || typeof lng !== 'number') return false;
-  const ring = boundary.coordinates[0];
+  const ring = polygon.coordinates[0];
   let inside = false;
   for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
     const [xi, yi] = ring[i];

@@ -10,6 +10,7 @@ import * as geofence from './geofence.js';
 import poisRouter from './routes/pois.js';
 import venueRouter from './routes/venue.js';
 import createSecurityRouter from './routes/security.js';
+import createDashboardRouter from './routes/dashboard.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PORT = process.env.PORT || 3001;
@@ -23,6 +24,9 @@ app.use(express.json());
 app.use('/api/pois', poisRouter);
 app.use('/api/venue', venueRouter);
 app.use('/api/security', createSecurityRouter({
+  getLiveGroup: (code) => groups.get(code),
+}));
+app.use('/api/dashboard', createDashboardRouter({
   getLiveGroup: (code) => groups.get(code),
 }));
 
@@ -215,10 +219,12 @@ wss.on('connection', (ws) => {
       const existing = group.guests.get(guestId);
       if (existing && existing.ws !== ws) existing.ws.terminate();
 
+      // Preserve joinedAt across reconnects — it feeds live dwell analytics.
       group.guests.set(guestId, {
         ws, id: guestId, name, groupCode, visibility,
         lat: null, lng: null, accuracy: null, heading: null,
         inside: null, // unknown until the first position fix
+        joinedAt: existing?.joinedAt ?? Date.now(),
         lastSeen: Date.now(),
       });
 

@@ -17,8 +17,9 @@ export class AccessDeniedError extends Error {
 }
 
 // SQL fragment: guest $N has an active grant for scope $M covering event $E.
-// A grant with event_id NULL covers all events.
-const ACTIVE_CONSENT = (guestCol, scopeParam, eventParam) => `
+// A grant with event_id NULL covers all events. Exported so aggregated
+// dashboard queries (dashboardStore.js) apply the same consent filter.
+export const ACTIVE_CONSENT = (guestCol, scopeParam, eventParam) => `
   EXISTS (
     SELECT 1 FROM consent_grant cg
     WHERE cg.guest_id = ${guestCol}
@@ -67,7 +68,9 @@ async function withTransaction(fn) {
  */
 export async function lookupIdentifiedGuest({ staffSessionId, guestId, eventId }) {
   return withTransaction(async (client) => {
-    const staff = await requireStaffSession(client, staffSessionId, ['security', 'admin']);
+    // Identified data is Security-role ONLY (Prompt 6): admins/promoters get
+    // operational visibility from aggregated views, never guest identity.
+    const staff = await requireStaffSession(client, staffSessionId, ['security']);
     const { rows } = await client.query(
       `SELECT g.id, g.display_name, g.last_seen_at,
               ST_Y(pf.location::geometry) AS lat, ST_X(pf.location::geometry) AS lng,
@@ -101,7 +104,7 @@ export async function lookupIdentifiedGuest({ staffSessionId, guestId, eventId }
  */
 export async function listIdentifiedRoster({ staffSessionId, eventId }) {
   return withTransaction(async (client) => {
-    const staff = await requireStaffSession(client, staffSessionId, ['security', 'admin']);
+    const staff = await requireStaffSession(client, staffSessionId, ['security']);
     const { rows } = await client.query(
       `SELECT g.id, g.display_name,
               ST_Y(pf.location::geometry) AS lat, ST_X(pf.location::geometry) AS lng,
@@ -182,6 +185,43 @@ export async function listFriendPositions({ viewerGuestId, eventId }) {
     [viewerGuestId, eventId ?? null]
   );
   return rows;
+}
+
+/**
+ * Security-only incident view WITH subject identity. The role check runs in
+ * the same transaction as the read and the per-subject audit rows — an
+ * account without the Security role cannot reach this data through any code
+ * path (the aggregated incident summary in dashboardStore never selects
+ * subject_guest_id). Subject names are operational data recorded by staff, so
+ * they are shown to Security without a roster consent — but every view of
+ * them is audited.
+ */
+export async function listIdentifiedIncidents({ staffSessionId, eventId }) {
+  return withTransaction(async (client) => {
+    const staff = await requireStaffSession(client, staffSessionId, ['security']);
+    const { rows } = await client.query(
+      `SELECT i.id, i.category, i.description, i.status,
+              i.created_at, i.resolved_at,
+              ST_Y(i.location::geometry) AS lat, ST_X(i.location::geometry) AS lng,
+              i.subject_guest_id, g.display_name AS subject_name
+       FROM incident_log i
+       LEFT JOIN guest g ON g.id = i.subject_guest_id
+       WHERE i.event_id = $1
+       ORDER BY i.created_at DESC
+       LIMIT 100`,
+      [eventId]
+    );
+    for (const row of rows) {
+      if (!row.subject_guest_id) continue;
+      await client.query(
+        `INSERT INTO audit_log (actor, actor_staff_session_id, target_guest_id, action, detail)
+         VALUES ($1, $1, $2, 'identified_guest_lookup', $3)`,
+        [staff.id, row.subject_guest_id,
+         JSON.stringify({ eventId, via: 'incident_identified_view', incidentId: row.id, role: staff.role })]
+      );
+    }
+    return rows;
+  });
 }
 
 /** Revoke a consent scope — takes effect on the next query, no cache to bust. */

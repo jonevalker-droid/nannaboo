@@ -1,0 +1,304 @@
+/* Ops dashboard — light surface (#fcfcfb) per the reference viz palette.
+   Text wears ink tokens; series/status color lives only on marks. */
+
+.dash-root {
+  min-height: 100vh;
+  background: #f1f0ee;
+  color: #0b0b0b;
+  font-family: -apple-system, 'Segoe UI', Roboto, sans-serif;
+}
+
+/* ─── nav ─── */
+
+.dash-nav {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 18px;
+  background: #fcfcfb;
+  border-bottom: 1px solid #e2e1de;
+  position: sticky;
+  top: 0;
+  z-index: 1100;
+  flex-wrap: wrap;
+}
+
+.dash-nav-tabs {
+  display: flex;
+  gap: 4px;
+  margin-left: auto;
+}
+
+.dash-nav-tabs button {
+  border: none;
+  background: none;
+  padding: 8px 14px;
+  font-size: 14px;
+  font-weight: 600;
+  color: #52514e;
+  border-radius: 8px;
+  cursor: pointer;
+}
+
+.dash-nav-tabs button.active {
+  background: #e8f0fb;
+  color: #1c5cab;
+}
+
+/* ─── layout & panels ─── */
+
+.dash-main {
+  display: grid;
+  grid-template-columns: minmax(340px, 3fr) minmax(300px, 2fr);
+  gap: 16px;
+  padding: 16px;
+  align-items: start;
+}
+
+.dash-main > .dash-panel:only-child { grid-column: 1 / -1; }
+
+@media (max-width: 860px) {
+  .dash-main { grid-template-columns: 1fr; }
+}
+
+.dash-panel {
+  background: #fcfcfb;
+  border: 1px solid #e2e1de;
+  border-radius: 12px;
+  padding: 16px;
+}
+
+.dash-panel header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 12px;
+}
+
+.dash-panel h2 { margin: 0; font-size: 17px; }
+.dash-panel h3 { margin: 16px 0 8px; font-size: 14px; color: #52514e; }
+
+.dash-muted { color: #7a7973; font-size: 12.5px; }
+.dash-error { color: #d03b3b; font-size: 13px; }
+
+/* ─── map ─── */
+
+.dash-map-panel { grid-row: span 2; }
+.dash-map { height: 420px; border-radius: 8px; }
+
+.dash-ramp-legend {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  margin-top: 8px;
+}
+
+.dash-ramp-legend i {
+  width: 22px;
+  height: 10px;
+  border-radius: 2px;
+  display: inline-block;
+}
+
+/* ─── zones ─── */
+
+.dash-zone-row { padding: 8px 0; border-top: 1px solid #efeeeb; }
+.dash-zone-row:first-of-type { border-top: none; }
+
+.dash-zone-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  margin-bottom: 4px;
+}
+
+.dash-status { font-size: 12.5px; font-weight: 700; }
+
+.dash-meter {
+  height: 8px;
+  background: #efeeeb;
+  border-radius: 4px;
+  overflow: hidden;
+}
+
+.dash-meter i {
+  display: block;
+  height: 100%;
+  border-radius: 4px;
+  transition: width 0.4s;
+}
+
+.dash-zone-foot {
+  display: flex;
+  justify-content: space-between;
+  font-size: 12.5px;
+  color: #52514e;
+  margin-top: 3px;
+}
+
+/* ─── bars (single series, direct labels) ─── */
+
+.dash-bar-row {
+  display: grid;
+  grid-template-columns: 90px 1fr 32px;
+  align-items: center;
+  gap: 8px;
+  margin: 5px 0;
+  font-size: 13px;
+}
+
+.dash-bar-label { color: #52514e; text-transform: capitalize; }
+.dash-bar-value { text-align: right; font-weight: 700; font-variant-numeric: tabular-nums; }
+
+.dash-bar-track { height: 14px; background: #efeeeb; border-radius: 4px; }
+.dash-bar-track i { display: block; height: 100%; border-radius: 4px; min-width: 2px; }
+
+/* ─── chips, feed, tables, forms ─── */
+
+.dash-chips { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 10px; }
+
+.dash-chip {
+  background: #efeeeb;
+  border-radius: 12px;
+  padding: 3px 10px;
+  font-size: 12px;
+  font-weight: 600;
+  color: #52514e;
+}
+
+.dash-chip.role { text-transform: capitalize; background: #e8f0fb; color: #1c5cab; }
+
+.dash-feed-row {
+  display: flex;
+  gap: 10px;
+  align-items: baseline;
+  padding: 6px 0;
+  border-top: 1px solid #efeeeb;
+  font-size: 13px;
+}
+
+.dash-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+.dash-table th {
+  text-align: left;
+  color: #7a7973;
+  font-size: 11.5px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  padding: 6px 8px 4px 0;
+}
+.dash-table td { padding: 6px 8px 6px 0; border-top: 1px solid #efeeeb; }
+
+.dash-form-row { display: flex; gap: 6px; margin-top: 12px; flex-wrap: wrap; }
+.dash-form-row input, .dash-form-row select { flex: 1; min-width: 90px; }
+
+input, select {
+  padding: 8px 10px;
+  border: 1px solid #d5d4d0;
+  border-radius: 8px;
+  font-size: 14px;
+  font-family: inherit;
+  background: white;
+  color: #0b0b0b;
+}
+
+.dash-inline-input { width: 100%; padding: 4px 8px; font-size: 13px; }
+
+button {
+  font-family: inherit;
+  cursor: pointer;
+}
+
+.dash-primary {
+  background: #1a73e8;
+  color: white;
+  border: none;
+  border-radius: 8px;
+  padding: 8px 16px;
+  font-size: 14px;
+  font-weight: 700;
+}
+
+.dash-panel button:not(.dash-primary):not(.dash-link-btn),
+.dash-login-card button:not(.dash-primary) {
+  background: white;
+  border: 1.5px solid #d5d4d0;
+  border-radius: 8px;
+  padding: 7px 14px;
+  font-size: 13.5px;
+  font-weight: 600;
+  color: #0b0b0b;
+}
+
+.dash-link-btn {
+  background: none;
+  border: none;
+  color: #1c5cab;
+  font-size: 12.5px;
+  font-weight: 600;
+  padding: 2px 4px;
+}
+
+/* ─── stat tiles ─── */
+
+.dash-tiles {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+  gap: 10px;
+  margin: 10px 0 16px;
+}
+
+.dash-tile {
+  background: #f6f5f3;
+  border-radius: 10px;
+  padding: 12px;
+  text-align: center;
+}
+
+.dash-tile em {
+  display: block;
+  font-style: normal;
+  font-size: 26px;
+  font-weight: 800;
+  font-variant-numeric: tabular-nums;
+}
+
+.dash-tile em small { font-size: 14px; font-weight: 600; color: #52514e; }
+.dash-tile span { font-size: 12px; color: #7a7973; }
+
+.dash-hours-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 16px;
+}
+
+@media (max-width: 640px) {
+  .dash-hours-grid { grid-template-columns: 1fr; }
+}
+
+/* ─── login ─── */
+
+.dash-login {
+  min-height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: #f1f0ee;
+  font-family: -apple-system, 'Segoe UI', Roboto, sans-serif;
+  padding: 20px;
+}
+
+.dash-login-card {
+  background: #fcfcfb;
+  border: 1px solid #e2e1de;
+  border-radius: 14px;
+  padding: 28px;
+  width: 100%;
+  max-width: 380px;
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+}
+
+.dash-login-card h1 { margin: 0; font-size: 22px; }
+.dash-login-card h3 { margin: 14px 0 0; font-size: 13px; color: #52514e; }

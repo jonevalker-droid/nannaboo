@@ -13,12 +13,10 @@
 // from live state: joining == venue_safety_network consent, and the
 // identified roster is empty because that scope can't be granted yet.
 import { Router } from 'express';
-import { randomUUID } from 'crypto';
 import * as db from '../db/index.js';
 import * as access from '../db/access.js';
 import * as geofence from '../geofence.js';
-
-const memorySessions = new Map(); // id -> { role, expiresAt } (no-DB mode only)
+import * as staffAuth from '../staffAuth.js';
 
 const wrap = (fn) => (req, res, next) => fn(req, res, next).catch(next);
 
@@ -39,9 +37,10 @@ function requireAdmin(req, res, next) {
 export default function createSecurityRouter({ getLiveGroup }) {
   const router = Router();
 
-  // Bootstrap a staff session (stand-in for real staff auth until Prompt 6).
+  // Bootstrap a staff session (stand-in for real staff auth; the dashboard
+  // signs in with the returned id).
   router.post('/session', requireAdmin, wrap(async (req, res) => {
-    const role = ['security', 'admin', 'promoter'].includes(req.body?.role)
+    const role = staffAuth.STAFF_ROLES.includes(req.body?.role)
       ? req.body.role : 'security';
     const name = String(req.body?.name ?? 'Field test').slice(0, 60);
     const hours = Math.min(24, Math.max(1, Number(req.body?.hours) || 8));
@@ -54,15 +53,10 @@ export default function createSecurityRouter({ getLiveGroup }) {
       );
       return res.status(201).json({ session: rows[0] });
     }
-    const id = randomUUID();
-    memorySessions.set(id, { role, expiresAt: Date.now() + hours * 3_600_000 });
-    res.status(201).json({ session: { id, role }, memoryMode: true });
+    res.status(201).json({ session: staffAuth.createMemorySession(name, role, hours), memoryMode: true });
   }));
 
-  function memorySession(id) {
-    const s = memorySessions.get(id);
-    return s && s.expiresAt > Date.now() ? s : null;
-  }
+  const memorySession = (id) => staffAuth.getStaffSession(id); // async, memory-backed here
 
   // ANONYMIZED path: position-only dots, on site (inside the fence).
   router.get('/positions', wrap(async (req, res) => {
@@ -76,7 +70,7 @@ export default function createSecurityRouter({ getLiveGroup }) {
       });
       return res.json({ positions, path: 'anonymized' });
     }
-    if (!memorySession(sessionId)) return res.status(403).json({ error: 'invalid staff session' });
+    if (!(await memorySession(sessionId))) return res.status(403).json({ error: 'invalid staff session' });
     const group = getLiveGroup(code);
     const positions = [];
     for (const g of group?.guests.values() ?? []) {
@@ -99,7 +93,12 @@ export default function createSecurityRouter({ getLiveGroup }) {
       });
       return res.json({ roster, path: 'identified' });
     }
-    if (!memorySession(sessionId)) return res.status(403).json({ error: 'invalid staff session' });
+    const sess = await memorySession(sessionId);
+    if (!sess) return res.status(403).json({ error: 'invalid staff session' });
+    // Identified data is Security-role only, even when the list is empty.
+    if (sess.role !== 'security') {
+      return res.status(403).json({ error: `role '${sess.role}' not permitted` });
+    }
     // No in-memory guest has (or can yet grant) identified_security_roster.
     res.json({ roster: [], path: 'identified' });
   }));

@@ -1,6 +1,7 @@
 import { StrictMode } from 'react';
 import { createRoot } from 'react-dom/client';
 import App from './App.jsx';
+import Dashboard from './dashboard/Dashboard.jsx';
 
 if ('serviceWorker' in navigator) {
   window.addEventListener('load', () => {
@@ -8,8 +9,11 @@ if ('serviceWorker' in navigator) {
   });
 }
 
+// /dashboard is the staff ops console; everything else is the guest PWA.
+const isDashboard = window.location.pathname.startsWith('/dashboard');
+
 createRoot(document.getElementById('root')).render(
   <StrictMode>
-    <App />
+    {isDashboard ? <Dashboard /> : <App />}
   </StrictMode>
 );

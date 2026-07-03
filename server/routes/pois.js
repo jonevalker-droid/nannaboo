@@ -1,12 +1,14 @@
-// POI API. Reads are public (guests browse POIs); writes are the Prompt-5
-// admin surface — API-only for now, guarded by ADMIN_KEY when set.
+// POI API. Reads are public (guests browse POIs); writes accept either the
+// ADMIN_KEY or an active admin/promoter staff session (the dashboard's POI
+// management panel signs requests with its session, not the raw key).
 import { Router } from 'express';
 import * as poiStore from '../poiStore.js';
+import { getStaffSession } from '../staffAuth.js';
 
 const router = Router();
 
 let warnedOpenAdmin = false;
-function requireAdmin(req, res, next) {
+async function requireAdmin(req, res, next) {
   const key = process.env.ADMIN_KEY;
   if (!key) {
     if (!warnedOpenAdmin) {
@@ -16,7 +18,9 @@ function requireAdmin(req, res, next) {
     return next();
   }
   if (req.get('x-admin-key') === key || req.query.key === key) return next();
-  res.status(401).json({ error: 'admin key required' });
+  const staff = await getStaffSession(req.get('x-staff-session') || req.query.session);
+  if (staff && ['admin', 'promoter'].includes(staff.role)) return next();
+  res.status(401).json({ error: 'admin key or admin/promoter staff session required' });
 }
 
 const num = (v) => {
