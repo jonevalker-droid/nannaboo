@@ -130,6 +130,11 @@ wss.on('connection', (ws) => {
   let guestId = null;
   let groupCode = null;
 
+  // Protocol-level liveness: browsers answer pings automatically even when
+  // the page sends no app messages (e.g. a guest still waiting on a GPS fix).
+  ws.isAlive = true;
+  ws.on('pong', () => { ws.isAlive = true; });
+
   ws.on('message', (raw) => {
     let msg;
     try { msg = JSON.parse(raw); } catch { return; }
@@ -214,6 +219,11 @@ wss.on('connection', (ws) => {
     if (sessions.get(guestId)?.ws === ws) sessions.delete(guestId);
     const group = groups.get(groupCode);
     if (!group) return;
+    // A reconnect may already have replaced this entry with a live socket
+    // (join terminates the stale one, and its close event lands here after
+    // the new entry is in place). Deleting by id alone would ghost the guest:
+    // still connected, but positions dropped and invisible to the group.
+    if (group.guests.get(guestId)?.ws !== ws) return;
     group.guests.delete(guestId);
     broadcast(group, groupStatePayload(group));
   });
@@ -221,15 +231,19 @@ wss.on('connection', (ws) => {
   ws.on('error', () => ws.terminate());
 });
 
-// Prune guests gone >5 min
+// Prune dead sockets via ping/pong instead of message activity: a connected
+// guest with no GPS fix sends no position messages, and must NOT be pruned
+// for being quiet. A socket that misses a whole ping round is dead; terminate
+// it and let the close handler remove the guest and broadcast.
 setInterval(() => {
-  const cutoff = Date.now() - 5 * 60 * 1000;
   for (const [code, group] of groups) {
-    for (const [id, guest] of group.guests) {
-      if (guest.lastSeen < cutoff) {
+    for (const guest of group.guests.values()) {
+      if (guest.ws.isAlive === false) {
         guest.ws.terminate();
-        group.guests.delete(id);
+        continue;
       }
+      guest.ws.isAlive = false;
+      guest.ws.ping();
     }
     if (group.guests.size === 0 && group.pins.length === 0) groups.delete(code);
   }

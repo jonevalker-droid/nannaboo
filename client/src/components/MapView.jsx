@@ -107,15 +107,22 @@ function pinIcon(label) {
   });
 }
 
-function FlyToFirst({ position }) {
+// Flies to my first real GPS fix; until one arrives, flies once to the best
+// group context (a peer's position or a shared pin) so the viewer is never
+// staring at an arbitrary hardcoded place.
+function AutoCenter({ myPos, context }) {
   const map = useMap();
-  const done = useRef(false);
+  const flownToGps = useRef(false);
+  const flownToContext = useRef(false);
   useEffect(() => {
-    if (position && !done.current) {
-      map.flyTo([position.lat, position.lng], 16, { duration: 1.5 });
-      done.current = true;
+    if (myPos && !flownToGps.current) {
+      flownToGps.current = true;
+      map.flyTo([myPos.lat, myPos.lng], 16, { duration: 1.5 });
+    } else if (!myPos && context && !flownToContext.current) {
+      flownToContext.current = true;
+      map.flyTo([context.lat, context.lng], 15, { duration: 1.5 });
     }
-  }, [position, map]);
+  }, [myPos, context, map]);
   return null;
 }
 
@@ -130,9 +137,8 @@ function TapListener({ active, onTap }) {
 
 export default function MapView({
   user, peers, pins, friendState, friendActions, wsStatus,
-  onPositionUpdate, onAddPin, onRemovePin,
+  myPos, geoStatus, onGeoRetry, onAddPin, onRemovePin,
 }) {
-  const [myPos, setMyPos] = useState(null);
   const [placing, setPlacing] = useState(false);
   const [pinLabel, setPinLabel] = useState('');
   const [pendingLL, setPendingLL] = useState(null);
@@ -158,7 +164,6 @@ export default function MapView({
     const p = peers.find((pp) => pp.id === peerId);
     if (p) setArTarget({ peerId, name: p.name });
   };
-  const watchId = useRef(null);
   const inputRef = useRef(null);
 
   useEffect(() => {
@@ -189,19 +194,6 @@ export default function MapView({
       haversineMeters(myPos, p) < haversineMeters(myPos, best) ? p : best);
   };
 
-  useEffect(() => {
-    watchId.current = navigator.geolocation.watchPosition(
-      ({ coords }) => {
-        const { latitude: lat, longitude: lng, accuracy, heading } = coords;
-        setMyPos({ lat, lng, accuracy });
-        onPositionUpdate(lat, lng, accuracy, heading);
-      },
-      (err) => console.warn('geo:', err),
-      { enableHighAccuracy: true, maximumAge: 5000, timeout: 15000 }
-    );
-    return () => navigator.geolocation.clearWatch(watchId.current);
-  }, [onPositionUpdate]);
-
   const handleTap = useCallback((lat, lng) => {
     setPendingLL({ lat, lng });
     setPlacing(false);
@@ -220,7 +212,12 @@ export default function MapView({
     setPlacing(false);
   };
 
-  const fallbackCenter = [44.5, -88.0];
+  // Initial center is only ever a real coordinate: my GPS, a groupmate's
+  // position, or a shared pin. With none of those yet, start on a world view
+  // (unmistakably "no location") — never a hardcoded placeholder that looks
+  // like someone's actual position.
+  const peerWithPos = peers.find((p) => p.lat != null);
+  const contextCenter = myPos ?? peerWithPos ?? pins[0] ?? null;
 
   return (
     <div className="map-screen">
@@ -284,9 +281,27 @@ export default function MapView({
         </div>
       )}
 
+      {geoStatus !== 'ok' && (
+        <div className={`geo-banner geo-${geoStatus}`}>
+          {geoStatus === 'locating' && <span>📡 Finding your GPS position…</span>}
+          {geoStatus === 'denied' && (
+            <span>
+              ⚠️ Location is blocked — allow it for this site in your browser
+              settings, then{' '}
+              <button className="geo-retry-btn" onClick={onGeoRetry}>
+                try again
+              </button>
+            </span>
+          )}
+          {geoStatus === 'unavailable' && (
+            <span>⚠️ This device can't share its location</span>
+          )}
+        </div>
+      )}
+
       <MapContainer
-        center={myPos ? [myPos.lat, myPos.lng] : fallbackCenter}
-        zoom={15}
+        center={contextCenter ? [contextCenter.lat, contextCenter.lng] : [20, 0]}
+        zoom={contextCenter ? 15 : 2}
         style={{ flex: 1 }}
         zoomControl
       >
@@ -296,7 +311,7 @@ export default function MapView({
           maxZoom={19}
         />
 
-        <FlyToFirst position={myPos} />
+        <AutoCenter myPos={myPos} context={peerWithPos ?? pins[0] ?? null} />
         <TapListener active={placing} onTap={handleTap} />
 
         {myPos && (

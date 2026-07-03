@@ -215,6 +215,37 @@ html, body, #root {
   transform: scale(0.95);
 }
 
+/* ─── GPS status banner ───────────────────────────────────────── */
+
+.geo-banner {
+  background: #fff8e1;
+  color: #5d4037;
+  font-size: 13px;
+  font-weight: 600;
+  padding: 8px 14px;
+  text-align: center;
+  z-index: 900;
+  flex-shrink: 0;
+  border-bottom: 1px solid rgba(0, 0, 0, 0.08);
+}
+
+.geo-banner.geo-denied,
+.geo-banner.geo-unavailable {
+  background: #fdecea;
+  color: #b71c1c;
+}
+
+.geo-retry-btn {
+  background: #b71c1c;
+  color: white;
+  border: none;
+  border-radius: 12px;
+  padding: 3px 12px;
+  font-size: 13px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
 /* ─── Placing-mode banner ─────────────────────────────────────── */
 
 .placing-banner {
