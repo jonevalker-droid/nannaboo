@@ -79,9 +79,19 @@ async function sendFriendState(targetGuestId) {
     const state = await friendStore.getFriendState(targetGuestId, eventKey);
     friendVisCache.set(
       targetGuestId,
-      new Map(state.friends.map((f) => [f.id, f.visibleToMe]))
+      new Map(state.friends.map((f) => [
+        f.id,
+        // theirOff = the friend EXPLICITLY blocked this viewer, which is the
+        // only friend-link state allowed to override a public guest down.
+        { visibleToMe: f.visibleToMe, theirOff: f.theirLevel === 'off' },
+      ]))
     );
-    sess.ws.send(JSON.stringify({ type: 'friendState', ...state }));
+    // Strip theirLevel from the wire: clients only ever learn the boolean.
+    sess.ws.send(JSON.stringify({
+      type: 'friendState',
+      ...state,
+      friends: state.friends.map(({ theirLevel: _t, ...f }) => f),
+    }));
   } catch (err) {
     console.error('[friends] friendState failed:', err.message);
   }
@@ -140,17 +150,20 @@ async function persistJoin(group, groupCode, guestId, name, visibility) {
 // May VIEWER see GUEST's position right now? (Both are live group members.)
 // - visibility 'off' hides in every guest layer.
 // - Positions only show while inside the venue geofence (no fence = inside).
-// - An existing friend link overrides down in ANY mode: the sharer's
-//   per-friend sharing_level decides, even if their general mode is public.
-// - Otherwise the guest-level mode decides: public -> anyone at the event,
-//   friends_only -> nobody who isn't a friend.
+// - public ("Everyone") means everyone at the event. A friend link may only
+//   override that DOWN via an EXPLICIT per-friend 'off' — a this_event_only
+//   link scoped to some earlier event must NOT hide a public guest from
+//   their friend while strangers still see them (4e field regression: both
+//   devices public + mutual friends, no markers either way).
+// - friends_only: the friend link fully decides (visibleToMe), including
+//   its event scoping — that's what this_event_only means on that tier.
 function canSeePosition(viewerId, g) {
   if (g.lat == null) return false;
   if (g.visibility === 'off') return false;
   if (!geofence.contains(g.lat, g.lng)) return false;
-  const friendVis = friendVisCache.get(viewerId)?.get(g.id);
-  if (friendVis !== undefined) return friendVis;
-  return g.visibility === 'public';
+  const link = friendVisCache.get(viewerId)?.get(g.id);
+  if (g.visibility === 'public') return link?.theirOff !== true;
+  return link?.visibleToMe === true;
 }
 
 // groupState is per-viewer since visibility tiers (4b): each recipient gets

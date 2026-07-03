@@ -180,10 +180,12 @@ export default function MapView({
     : poiFilter === 'friends' ? []
     : pois.filter((p) => p.category === poiFilter);
 
-  // Friends filter narrows the PEER layer to friends who share with me;
-  // every other filter keeps the base everyone-in-group layer untouched.
+  // Friends filter narrows the PEER layer to friends. The server already
+  // decides whose position I may see (per-viewer groupState) — so membership
+  // is the only client-side criterion; gating on visibleToMe here would hide
+  // a public friend whose this_event_only link is scoped to an older event.
   const visiblePeers = poiFilter === 'friends'
-    ? peers.filter((p) => friendById.get(p.id)?.visibleToMe)
+    ? peers.filter((p) => friendById.has(p.id))
     : peers;
 
   const poiCategories = [...new Set(pois.map((p) => p.category))]

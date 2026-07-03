@@ -75,6 +75,9 @@ export async function getFriendState(guestId, eventKey) {
         id: r.id,
         name: r.name,
         myLevel: r.my_level,
+        // theirLevel is for the SERVER's visibility cache only — the wire
+        // payload strips it (clients get just the visibleToMe boolean).
+        theirLevel: r.their_level,
         visibleToMe: visible(r.their_level, r.their_event_id, eventKey),
       })),
       sent: reqs.rows.filter((r) => r.from_guest_id === guestId)
@@ -94,6 +97,7 @@ export async function getFriendState(guestId, eventKey) {
       id: viewer,
       name: nameOf(viewer),
       myLevel: mine.level,
+      theirLevel: theirs.level, // server-cache only; stripped before send
       visibleToMe: visible(theirs.level, theirs.eventKey, eventKey),
     });
   }
