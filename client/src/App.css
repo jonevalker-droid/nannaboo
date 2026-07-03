@@ -235,6 +235,14 @@ html, body, #root {
   color: #b71c1c;
 }
 
+.geo-detail {
+  display: block;
+  margin-top: 3px;
+  font-size: 11px;
+  font-weight: 400;
+  opacity: 0.85;
+}
+
 .geo-retry-btn {
   background: #b71c1c;
   color: white;

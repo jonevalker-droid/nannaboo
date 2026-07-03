@@ -137,7 +137,7 @@ function TapListener({ active, onTap }) {
 
 export default function MapView({
   user, peers, pins, friendState, friendActions, wsStatus,
-  myPos, geoStatus, onGeoRetry, onAddPin, onRemovePin,
+  myPos, geoStatus, geoDetail, onGeoRetry, onAddPin, onRemovePin,
 }) {
   const [placing, setPlacing] = useState(false);
   const [pinLabel, setPinLabel] = useState('');
@@ -291,6 +291,11 @@ export default function MapView({
               <button className="geo-retry-btn" onClick={onGeoRetry}>
                 try again
               </button>
+              <span className="geo-detail">
+                iPhone: also check Settings → Privacy &amp; Security → Location
+                Services → Safari Websites → “While Using the App”.
+                {geoDetail ? ` (${geoDetail})` : ''}
+              </span>
             </span>
           )}
           {geoStatus === 'unavailable' && (

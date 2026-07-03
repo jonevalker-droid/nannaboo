@@ -16,6 +16,11 @@ function getOrCreateGuestId() {
 const WS_URL =
   `${location.protocol === 'https:' ? 'wss:' : 'ws:'}//${location.host}/ws`;
 
+// Geolocation debug trail: every attempt, outcome, and error code is logged
+// so a field failure can be diagnosed from a remote devtools session.
+const geoLog = (...args) => console.log('[geo]', ...args);
+const GEO_ERR = { 1: 'PERMISSION_DENIED', 2: 'POSITION_UNAVAILABLE', 3: 'TIMEOUT' };
+
 export default function App() {
   const [phase, setPhase] = useState('join');
   const [user, setUser] = useState(null);
@@ -25,12 +30,14 @@ export default function App() {
   const [wsStatus, setWsStatus] = useState('disconnected');
   const [myPos, setMyPos] = useState(null);
   const [geoStatus, setGeoStatus] = useState('locating'); // locating | ok | denied | unavailable
+  const [geoDetail, setGeoDetail] = useState(null); // last error message, shown in the banner
 
   const wsRef = useRef(null);
   const userRef = useRef(null);
   const reconnectRef = useRef(null);
   const geoWatchRef = useRef(null);
   const geoRetryRef = useRef(null);
+  const geoStatusRef = useRef('locating'); // mirror for non-render callbacks
 
   const connect = useCallback((userData) => {
     clearTimeout(reconnectRef.current);
@@ -80,44 +87,125 @@ export default function App() {
     }));
   }, []);
 
+  const setGeo = useCallback((status, detail = null) => {
+    geoStatusRef.current = status;
+    setGeoStatus(status);
+    setGeoDetail(detail);
+  }, []);
+
+  const applyFix = useCallback(({ coords }) => {
+    const { latitude: lat, longitude: lng, accuracy, heading } = coords;
+    geoLog(`fix ok lat=${lat.toFixed(5)} lng=${lng.toFixed(5)} ±${Math.round(accuracy)}m`);
+    setGeo('ok');
+    setMyPos({ lat, lng, accuracy });
+    sendPosition(lat, lng, accuracy, heading);
+  }, [sendPosition, setGeo]);
+
+  // Log the Permissions API snapshot for diagnosis ONLY. Mobile Safari can
+  // report stale/cached state after the user changes settings, so nothing is
+  // ever gated on it — the outcome of a real watchPosition/getCurrentPosition
+  // attempt is the only source of truth for the banner.
+  const logPermissionSnapshot = useCallback((label) => {
+    try {
+      navigator.permissions?.query({ name: 'geolocation' })
+        .then((st) => geoLog(`${label}: permissions.query reports '${st.state}' (informational only)`))
+        .catch(() => {});
+    } catch { /* Permissions API unavailable */ }
+  }, []);
+
   // Live GPS watch for the whole session, started at join so the permission
   // prompt and first fix happen while the exits screen is up. Nothing is ever
   // sent until a real fix arrives — there is no placeholder position, and a
   // failed watch is restarted rather than silently abandoned (some mobile
   // browsers wedge a watch after a timeout error).
-  const startGeoWatch = useCallback(() => {
+  const startGeoWatch = useCallback((trigger = 'join') => {
     if (!('geolocation' in navigator)) {
-      setGeoStatus('unavailable');
+      geoLog('navigator.geolocation missing — cannot locate this device');
+      setGeo('unavailable');
       return;
     }
     clearTimeout(geoRetryRef.current);
     if (geoWatchRef.current != null) {
       navigator.geolocation.clearWatch(geoWatchRef.current);
     }
-    setGeoStatus((s) => (s === 'ok' ? s : 'locating'));
+    if (geoStatusRef.current !== 'ok') setGeo('locating');
+    geoLog(`starting watchPosition (${trigger})`);
+    logPermissionSnapshot(`watch/${trigger}`);
     geoWatchRef.current = navigator.geolocation.watchPosition(
-      ({ coords }) => {
-        const { latitude: lat, longitude: lng, accuracy, heading } = coords;
-        setGeoStatus('ok');
-        setMyPos({ lat, lng, accuracy });
-        sendPosition(lat, lng, accuracy, heading);
-      },
+      applyFix,
       (err) => {
-        console.warn('geo:', err.code, err.message);
+        geoLog(`watch error code=${err.code} ${GEO_ERR[err.code] ?? '?'}: ${err.message}`);
         if (err.code === 1) {
-          // PERMISSION_DENIED: retrying is pointless until the user acts;
-          // the map shows a banner with a retry button wired to this fn.
-          setGeoStatus('denied');
+          // PERMISSION_DENIED: nothing recovers without user action; the
+          // banner's "try again" runs retryGeo, and a permissions-change
+          // event (where supported) nudges it automatically.
+          setGeo('denied', err.message);
           return;
         }
         // TIMEOUT / POSITION_UNAVAILABLE: keep the last fix if we had one,
         // tear the watch down and start fresh.
-        setGeoStatus((s) => (s === 'ok' ? s : 'locating'));
-        geoRetryRef.current = setTimeout(startGeoWatch, 3000);
+        if (geoStatusRef.current !== 'ok') setGeo('locating');
+        geoRetryRef.current = setTimeout(() => startGeoWatch('error-restart'), 3000);
       },
       { enableHighAccuracy: true, maximumAge: 5000, timeout: 20000 }
     );
-  }, [sendPosition]);
+  }, [applyFix, logPermissionSnapshot, setGeo]);
+
+  // Recovery path: "try again" must genuinely re-attempt geolocation, not
+  // reset a UI flag. After an earlier denial, mobile Safari can leave a
+  // restarted watchPosition wedged (or instantly re-fail it from cache), so
+  // the retry probes with a fresh one-shot getCurrentPosition — its real
+  // outcome decides the banner — and on success hands off to a clean watch.
+  const retryGeo = useCallback((trigger) => {
+    const why = typeof trigger === 'string' ? trigger : 'retry-button';
+    if (!('geolocation' in navigator)) return;
+    geoLog(`retry (${why}) — probing with one-shot getCurrentPosition`);
+    logPermissionSnapshot(`retry/${why}`);
+    if (geoStatusRef.current !== 'ok') setGeo('locating');
+    navigator.geolocation.getCurrentPosition(
+      (pos) => {
+        geoLog(`retry (${why}) probe succeeded — restarting live watch`);
+        applyFix(pos);
+        startGeoWatch(`${why}-recovered`);
+      },
+      (err) => {
+        geoLog(`retry (${why}) probe error code=${err.code} ${GEO_ERR[err.code] ?? '?'}: ${err.message}`);
+        if (err.code === 1) {
+          setGeo('denied', err.message);
+          return;
+        }
+        // Transient failure while permission itself is fine: let the normal
+        // watch restart/backoff loop take it from here.
+        startGeoWatch(`${why}-fallback`);
+      },
+      { enableHighAccuracy: true, maximumAge: 0, timeout: 20000 }
+    );
+  }, [applyFix, startGeoWatch, logPermissionSnapshot, setGeo]);
+
+  // Where the browser fires permission-change events, use a flip to
+  // 'granted' as a nudge to re-attempt for users who fix their settings but
+  // never tap the button. Trigger only — the attempt's outcome, not the
+  // reported state, decides what the banner shows.
+  useEffect(() => {
+    let st = null;
+    let cancelled = false;
+    try {
+      navigator.permissions?.query({ name: 'geolocation' }).then((status) => {
+        if (cancelled) return;
+        st = status;
+        st.onchange = () => {
+          geoLog(`permissions.query state changed to '${st.state}'`);
+          if (st.state === 'granted' && geoStatusRef.current === 'denied') {
+            retryGeo('permission-change');
+          }
+        };
+      }).catch(() => {});
+    } catch { /* no Permissions API — the banner button covers recovery */ }
+    return () => {
+      cancelled = true;
+      if (st) st.onchange = null;
+    };
+  }, [retryGeo]);
 
   const handleJoin = useCallback((name, groupCode) => {
     const userData = {
@@ -195,7 +283,8 @@ export default function App() {
       wsStatus={wsStatus}
       myPos={myPos}
       geoStatus={geoStatus}
-      onGeoRetry={startGeoWatch}
+      geoDetail={geoDetail}
+      onGeoRetry={retryGeo}
       onAddPin={addPin}
       onRemovePin={removePin}
     />
