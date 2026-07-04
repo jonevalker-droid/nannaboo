@@ -27,8 +27,14 @@ export const CATEGORY_META = {
   rideshare:        { emoji: '🚗', label: 'Rideshare', color: '#4527a0' },
   water:            { emoji: '💧', label: 'Water',     color: '#0097a7' },
   quiet_room:       { emoji: '🤫', label: 'Quiet Room', color: '#37474f' },
+  vendor:           { emoji: '🛒', label: 'Vendors',   color: '#c2185b' },
   other:            { emoji: '📌', label: 'Other',     color: '#546e7a' },
 };
+
+// Multi-POI AR shows everything matching the active filter chip within this
+// range, nearest first, capped so a dense venue doesn't wallpaper the screen.
+const AR_POI_RANGE_M = 2000;
+const AR_POI_MAX = 12;
 
 function poiIcon(category) {
   const meta = CATEGORY_META[category] ?? CATEGORY_META.other;
@@ -155,6 +161,7 @@ export default function MapView({
   const [poiFilter, setPoiFilter] = useState('all');
   const [arTarget, setArTarget] = useState(null);
   const [friendsAr, setFriendsAr] = useState(false); // all-friends multi-target AR
+  const [poiAr, setPoiAr] = useState(false); // multi-POI AR (active filter chip)
   const [showFriends, setShowFriends] = useState(false);
 
   const friendById = new Map(friendState.friends.map((f) => [f.id, f]));
@@ -183,17 +190,42 @@ export default function MapView({
   };
   const inputRef = useRef(null);
 
+  // POIs refresh on a slow poll (not just once at mount) so dashboard vendor
+  // changes — add / remove / footprint re-tier — reach guests on the next
+  // refresh without an app reload.
   useEffect(() => {
-    fetch('/api/pois')
-      .then((r) => r.json())
-      .then((d) => setPois(d.pois ?? []))
-      .catch((err) => console.warn('pois:', err));
+    const load = () =>
+      fetch('/api/pois')
+        .then((r) => r.json())
+        .then((d) => setPois(d.pois ?? []))
+        .catch((err) => console.warn('pois:', err));
+    load();
+    const t = setInterval(load, 10000);
+    return () => clearInterval(t);
   }, []);
 
   const visiblePois = poiFilter === 'all'
     ? pois
     : poiFilter === 'friends' ? []
     : pois.filter((p) => p.category === poiFilter);
+
+  // Multi-POI AR targets: same POIs the active filter chip shows, in range,
+  // nearest first. Recomputed per render off the polled `pois`, so vendor
+  // add/remove/re-tier lands on the next poll without reopening AR. Each
+  // target carries its category emoji; footprintTier rides along untouched
+  // (the server guarantees it exists only on vendors).
+  const arPois = visiblePois
+    .map((p) => ({
+      ...p,
+      emoji: (CATEGORY_META[p.category] ?? CATEGORY_META.other).emoji,
+    }))
+    .filter((p) => !myPos || haversineMeters(myPos, p) <= AR_POI_RANGE_M)
+    .sort((a, b) => (myPos ? haversineMeters(myPos, a) - haversineMeters(myPos, b) : 0))
+    .slice(0, AR_POI_MAX);
+
+  const poiArMeta = poiFilter === 'all' || poiFilter === 'friends'
+    ? { emoji: '📍', label: 'All places' }
+    : (CATEGORY_META[poiFilter] ?? CATEGORY_META.other);
 
   // Friends filter narrows the PEER layer to friends. The server already
   // decides whose position I may see (per-viewer groupState) — so membership
@@ -252,6 +284,24 @@ export default function MapView({
           }}
         >
           🚪 Exit
+        </button>
+        <button
+          className="exit-ar-btn poi-ar-all-btn"
+          title="AR view of everything in the active filter"
+          onClick={() => {
+            // Friends chip active → the friends multi-AR is the matching view.
+            if (poiFilter === 'friends') {
+              if (arFriends.length) { setArTarget(null); setFriendsAr(true); }
+              else alert('No friends sharing a live position right now');
+              return;
+            }
+            if (!pois.length) { alert('No places mapped yet'); return; }
+            setArTarget(null);
+            setFriendsAr(false);
+            setPoiAr(true);
+          }}
+        >
+          📷 AR
         </button>
         <button
           className="sos-btn"
@@ -518,10 +568,22 @@ export default function MapView({
         />
       )}
 
-      {/* AR camera view. Two distinct modes: the original single-target view
-          (POIs use a fixed target; a friend tracks live) and the all-friends
-          multi-target view — mutually exclusive, labeled in the AR header. */}
-      {friendsAr ? (
+      {/* AR camera view. Three mutually exclusive modes, labeled in the AR
+          header: the original single-target view (a POI's "Point me there" /
+          one friend tracking live), the all-friends multi view, and the
+          multi-POI view (everything the active filter chip matches, in
+          range). Vendor footprint tiers only affect the multi-POI view's
+          screen-space styling. */}
+      {poiAr ? (
+        <ARView
+          mode="multi"
+          targets={arPois}
+          modeLabel={`${poiArMeta.emoji} ${poiArMeta.label}`}
+          emptyLabel={`No ${poiArMeta.label.toLowerCase()} within ${AR_POI_RANGE_M / 1000} km right now`}
+          myPos={myPos}
+          onClose={() => setPoiAr(false)}
+        />
+      ) : friendsAr ? (
         <ARView
           mode="multi"
           targets={arFriends}

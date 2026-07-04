@@ -55,6 +55,17 @@ function validatePoiFields(body, { partial = false } = {}) {
   }
   if (has('floorLevel')) out.floorLevel = body.floorLevel === null ? null : String(body.floorLevel).slice(0, 20);
   if (has('liveStatus')) out.liveStatus = body.liveStatus === null ? null : String(body.liveStatus).slice(0, 120);
+  if (has('footprintTier')) {
+    if (body.footprintTier !== null && !poiStore.FOOTPRINT_TIERS.includes(body.footprintTier)) {
+      errors.push(`footprintTier must be null or one of: ${poiStore.FOOTPRINT_TIERS.join(', ')}`);
+    } else if (body.footprintTier !== null && out.category !== undefined && out.category !== 'vendor') {
+      // Early, explicit rejection when the same request names a non-vendor
+      // category. Partial updates that omit category are validated against
+      // the stored row in poiStore (and by the DB CHECK constraint) — the
+      // vendor-only rule holds even for requests this branch can't see.
+      errors.push("footprintTier is only valid on the 'vendor' category — safety POIs are never tiered");
+    } else out.footprintTier = body.footprintTier;
+  }
   return { out, errors };
 }
 
@@ -109,8 +120,12 @@ async function seedDemo(req, res) {
 router.post('/seed-demo', requireAdmin, wrap(seedDemo));
 router.get('/seed-demo', requireAdmin, wrap(seedDemo));
 
-// Surface unexpected errors as JSON instead of the HTML default.
+// Surface unexpected errors as JSON instead of the HTML default. The data
+// layer's vendor-only footprint rejection is a client error, not a crash.
 router.use((err, _req, res, _next) => {
+  if (err.code === 'FOOTPRINT_NOT_ALLOWED') {
+    return res.status(400).json({ errors: [err.message] });
+  }
   console.error('[pois]', err);
   res.status(500).json({ error: 'internal error' });
 });

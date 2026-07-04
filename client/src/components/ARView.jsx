@@ -24,18 +24,37 @@ function relToX(rel) {
   return Math.max(6, Math.min(94, 50 + (rel / 60) * 45));
 }
 
+// Vendor footprint tiers: a SCREEN-SPACE prominence rank only — bigger arrow,
+// badge, and first claim on the top stack row. Deliberately not presented as
+// spatial height/depth: this AR is compass bearing + GPS distance, so there
+// is no real 3D placement to promote a vendor within. Targets without a tier
+// (friends, exits, every safety POI — the data layer guarantees those can
+// never carry one) all render at the same full standard prominence.
+const TIER_RANK = { premium: 2, featured: 1, standard: 0 };
+const TIER_META = {
+  featured: { arrow: 66, badge: '★ Featured' },
+  premium:  { arrow: 80, badge: '◆ Premium' },
+};
+
 // Assign stack rows so labels at similar bearings don't overlap: sorted by x,
-// any marker within 18% of the previous one drops a row below it.
+// any marker within 18% of the previous one joins its cluster and drops a row
+// below. Within a cluster, higher footprint tiers claim the upper rows
+// (their stacking priority); equal tiers stack nearest-first.
 function placeMarkers(markers) {
   const sorted = [...markers].sort((a, b) => a.x - b.x);
+  const clusters = [];
   let prevX = -100;
-  let prevRow = 0;
-  return sorted.map((m) => {
-    const row = m.x - prevX < 18 ? prevRow + 1 : 0;
+  for (const m of sorted) {
+    if (m.x - prevX < 18 && clusters.length) clusters[clusters.length - 1].push(m);
+    else clusters.push([m]);
     prevX = m.x;
-    prevRow = row;
-    return { ...m, row };
-  });
+  }
+  return clusters.flatMap((cluster) =>
+    [...cluster]
+      .sort((a, b) =>
+        (TIER_RANK[b.tier] ?? 0) - (TIER_RANK[a.tier] ?? 0) || a.dist - b.dist)
+      .map((m, row) => ({ ...m, row }))
+  );
 }
 
 function ArrowSvg({ size = 110 }) {
@@ -57,6 +76,7 @@ export default function ARView({
   mode = 'single',
   targets = [],
   modeLabel = null,        // header pill naming the multi mode ("👥 All friends")
+  emptyLabel = 'Nobody here is sharing a live position right now', // multi mode, zero live targets
   auto = false,            // entry flash: tap-anywhere skip, no motion-perm prompt
   autoSecondsLeft = null,  // countdown shown in the skip hint
   onToggleAllFriends = null, // single-friend view → switch to all-friends mode
@@ -143,6 +163,10 @@ export default function ARView({
         return {
           id: t.id ?? t.name, name: t.name, bearing, dist, rel,
           x: rel != null ? relToX(rel) : null,
+          emoji: t.emoji ?? null,
+          // Prominence tier passes through ONLY for vendors — the server
+          // never emits footprintTier on any other category.
+          tier: t.category === 'vendor' ? t.footprintTier ?? null : null,
         };
       })
     : [];
@@ -172,7 +196,7 @@ export default function ARView({
               <span className="ar-mode-pill">{modeLabel ?? '👥 All friends'}</span>
               <span>
                 {!myPos ? 'waiting for GPS…'
-                  : liveTargets.length === 0 ? 'nobody sharing right now'
+                  : liveTargets.length === 0 ? 'no targets right now'
                   : `${liveTargets.length} ${liveTargets.length === 1 ? 'target' : 'targets'} · live`}
               </span>
             </>
@@ -192,24 +216,32 @@ export default function ARView({
       {mode === 'multi' ? (
         <>
           {heading != null && myPos != null ? (
-            placed.map((m) => (
-              <div
-                key={m.id}
-                className="ar-marker"
-                style={{ left: `${m.x}%`, top: `calc(26% + ${m.row * 88}px)` }}
-              >
+            placed.map((m) => {
+              const tierMeta = TIER_META[m.tier];
+              return (
                 <div
-                  className={`ar-arrow ar-marker-arrow ${Math.abs(m.rel) < 20 ? 'on-target' : ''}`}
-                  style={{ transform: `rotate(${m.rel}deg)` }}
+                  key={m.id}
+                  className={`ar-marker ${m.tier ? `ar-tier-${m.tier}` : ''}`}
+                  style={{
+                    left: `${m.x}%`,
+                    top: `calc(26% + ${m.row * 96}px)`,
+                    zIndex: 1 + (TIER_RANK[m.tier] ?? 0),
+                  }}
                 >
-                  <ArrowSvg size={54} />
+                  <div
+                    className={`ar-arrow ar-marker-arrow ${Math.abs(m.rel) < 20 ? 'on-target' : ''}`}
+                    style={{ transform: `rotate(${m.rel}deg)` }}
+                  >
+                    <ArrowSvg size={tierMeta?.arrow ?? 54} />
+                  </div>
+                  <div className="ar-marker-label">
+                    {tierMeta && <em className="ar-tier-badge">{tierMeta.badge}</em>}
+                    <strong>{m.emoji ? `${m.emoji} ` : ''}{m.name}</strong>
+                    <span>{formatDistance(m.dist)}</span>
+                  </div>
                 </div>
-                <div className="ar-marker-label">
-                  <strong>{m.name}</strong>
-                  <span>{formatDistance(m.dist)}</span>
-                </div>
-              </div>
-            ))
+              );
+            })
           ) : (
             <div className="ar-center">
               <div className="ar-fallback ar-multi-fallback">
@@ -221,15 +253,21 @@ export default function ARView({
                 {!myPos ? (
                   <p>Waiting for GPS fix…</p>
                 ) : liveTargets.length === 0 ? (
-                  <p>Nobody here is sharing a live position right now</p>
+                  <p>{emptyLabel}</p>
                 ) : (
                   <ul className="ar-multi-list">
-                    {multiMarkers.map((m) => (
-                      <li key={m.id}>
-                        <strong>{m.name}</strong>
-                        {' '}— {formatDistance(m.dist)} · head <strong>{cardinal(m.bearing)}</strong>
-                      </li>
-                    ))}
+                    {[...multiMarkers]
+                      .sort((a, b) =>
+                        (TIER_RANK[b.tier] ?? 0) - (TIER_RANK[a.tier] ?? 0) || a.dist - b.dist)
+                      .map((m) => (
+                        <li key={m.id} className={m.tier ? `ar-tier-${m.tier}` : ''}>
+                          {TIER_META[m.tier] && (
+                            <em className="ar-tier-badge">{TIER_META[m.tier].badge}</em>
+                          )}
+                          <strong>{m.emoji ? `${m.emoji} ` : ''}{m.name}</strong>
+                          {' '}— {formatDistance(m.dist)} · head <strong>{cardinal(m.bearing)}</strong>
+                        </li>
+                      ))}
                   </ul>
                 )}
               </div>
@@ -238,7 +276,7 @@ export default function ARView({
           {heading != null && myPos != null && liveTargets.length === 0 && (
             <div className="ar-center">
               <div className="ar-fallback">
-                <p>Nobody here is sharing a live position right now</p>
+                <p>{emptyLabel}</p>
               </div>
             </div>
           )}

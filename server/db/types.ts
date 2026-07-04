@@ -29,7 +29,17 @@ export type PoiCategory =
   | 'restroom' | 'exit' | 'medic' | 'food' | 'drink' | 'smoking' | 'atm'
   | 'lost_and_found' | 'info' | 'charging' | 'merch' | 'coat_check'
   | 'accessible_route' | 'parking' | 'rideshare' | 'water' | 'quiet_room'
-  | 'other';
+  | 'other' | 'vendor';
+
+/**
+ * Vendor AR "footprint" tier — a 2D screen-space prominence rank (icon size,
+ * styling, stacking priority) in the multi-target AR view. NOT spatial depth:
+ * the AR system is compass-bearing + distance based, not SLAM/6DOF.
+ * Valid ONLY when category === 'vendor'; safety categories (exit, medic,
+ * restroom — and all other non-vendor categories) are structurally untierable
+ * (poi_footprint_vendor_only CHECK, migration 010).
+ */
+export type FootprintTier = 'standard' | 'featured' | 'premium';
 
 export type ConsentScope =
   | 'venue_safety_network'       // anonymous presence visible to venue safety ops (condition of entry)
@@ -96,6 +106,8 @@ export interface Poi {
   liveStatus: string | null;
   /** Optional indoor floor/level reference, e.g. '1', 'B1', 'Mezzanine'. */
   floorLevel: string | null;
+  /** Vendor-only AR prominence tier; always null on non-vendor categories. */
+  footprintTier: FootprintTier | null;
   createdAt: IsoTimestamp;
   updatedAt: IsoTimestamp;
 }

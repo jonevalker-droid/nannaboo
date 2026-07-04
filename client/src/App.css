@@ -962,6 +962,38 @@ html, body, #root {
 
 .ar-marker-label span { font-size: 12px; opacity: 0.9; }
 
+/* Vendor footprint tiers — screen-space styling only (bigger arrow set in
+   ARView, badge + accent here). Never applied to safety POIs: the server
+   rejects a tier on any non-vendor category, so these classes can only ever
+   appear on vendor markers. */
+
+.ar-tier-badge {
+  font-style: normal;
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  padding: 1px 8px;
+  border-radius: 8px;
+  margin-bottom: 2px;
+  text-shadow: none;
+}
+
+.ar-tier-featured .ar-tier-badge { background: #f9a825; color: #1a1a1a; }
+.ar-tier-premium .ar-tier-badge { background: #e040fb; color: #fff; }
+
+.ar-tier-featured .ar-marker-label { border: 1.5px solid #f9a825; }
+.ar-tier-premium .ar-marker-label {
+  border: 2px solid #e040fb;
+  box-shadow: 0 0 14px rgba(224, 64, 251, 0.55);
+}
+
+/* :not(.on-target) keeps the "straight ahead" green cue authoritative */
+.ar-tier-featured .ar-arrow:not(.on-target) { color: #ffd54f; }
+.ar-tier-premium .ar-arrow:not(.on-target) { color: #ea80fc; }
+
+.ar-multi-list li .ar-tier-badge { margin-right: 6px; }
+
 .ar-multi-list {
   list-style: none;
   padding: 0;

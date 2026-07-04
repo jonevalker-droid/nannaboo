@@ -8,7 +8,24 @@ export const CATEGORIES = [
   'restroom', 'exit', 'medic', 'food', 'drink', 'smoking', 'atm',
   'lost_and_found', 'info', 'charging', 'merch', 'coat_check',
   'accessible_route', 'parking', 'rideshare', 'water', 'quiet_room', 'other',
+  'vendor',
 ];
+
+// Vendor "footprint" tiers: screen-space AR prominence (icon size, styling,
+// stacking priority) — a 2D styling rank, not spatial height. Tiers exist
+// ONLY on the 'vendor' category; safety categories can never carry one.
+// Enforced here (both backends) and by a CHECK constraint (migration 010).
+export const FOOTPRINT_TIERS = ['standard', 'featured', 'premium'];
+
+// Thrown as a typed error so the route can answer 400, not 500.
+export function footprintError(category) {
+  const err = new Error(
+    `footprintTier is only valid on the 'vendor' category (got '${category}') — ` +
+    'safety and standard POIs always render at full, non-tiered prominence'
+  );
+  err.code = 'FOOTPRINT_NOT_ALLOWED';
+  return err;
+}
 
 const memory = new Map(); // id -> poi, used only when db is disabled
 
@@ -54,6 +71,7 @@ const rowToPoi = (r) => ({
   lng: r.lng,
   floorLevel: r.floor_level,
   liveStatus: r.live_status,
+  footprintTier: r.footprint_tier ?? null,
 });
 
 // ---- CRUD ----
@@ -70,7 +88,7 @@ export async function listPois({ category, lat, lng, limit } = {}) {
     const { rows } = await db.getPool().query(
       `SELECT id, category, name,
               ST_Y(location::geometry) AS lat, ST_X(location::geometry) AS lng,
-              floor_level, live_status
+              floor_level, live_status, footprint_tier
        FROM poi WHERE ${where}`,
       params
     );
@@ -82,22 +100,48 @@ export async function listPois({ category, lat, lng, limit } = {}) {
   return limit ? pois.slice(0, limit) : pois;
 }
 
-export async function createPoi({ category, name, lat, lng, floorLevel, liveStatus }) {
+export async function createPoi({ category, name, lat, lng, floorLevel, liveStatus, footprintTier }) {
+  // Data-layer invariant: only vendors carry a footprint tier. A vendor
+  // without one defaults to 'standard'; any tier on another category is
+  // rejected outright (mirrors migration 010's CHECK constraint).
+  if (footprintTier != null && category !== 'vendor') throw footprintError(category);
+  const tier = category === 'vendor' ? (footprintTier ?? 'standard') : null;
   const id = randomUUID();
   if (db.enabled) {
     await db.getPool().query(
-      `INSERT INTO poi (id, venue_id, category, name, location, floor_level, live_status)
-       VALUES ($1, $2, $3, $4, ST_SetSRID(ST_MakePoint($5, $6), 4326)::geography, $7, $8)`,
-      [id, db.getDefaultVenueId(), category, name, lng, lat, floorLevel ?? null, liveStatus ?? null]
+      `INSERT INTO poi (id, venue_id, category, name, location, floor_level, live_status, footprint_tier)
+       VALUES ($1, $2, $3, $4, ST_SetSRID(ST_MakePoint($5, $6), 4326)::geography, $7, $8, $9)`,
+      [id, db.getDefaultVenueId(), category, name, lng, lat, floorLevel ?? null, liveStatus ?? null, tier]
     );
   } else {
-    memory.set(id, { id, category, name, lat, lng, floorLevel: floorLevel ?? null, liveStatus: liveStatus ?? null });
+    memory.set(id, { id, category, name, lat, lng, floorLevel: floorLevel ?? null, liveStatus: liveStatus ?? null, footprintTier: tier });
   }
-  return { id, category, name, lat, lng, floorLevel: floorLevel ?? null, liveStatus: liveStatus ?? null };
+  return { id, category, name, lat, lng, floorLevel: floorLevel ?? null, liveStatus: liveStatus ?? null, footprintTier: tier };
+}
+
+// Validate the footprint tier of the MERGED (existing + patch) state and
+// return the tier the update must land on:
+//   - a non-null tier on a non-vendor result throws (the safety invariant)
+//   - re-categorizing away from vendor implicitly clears the tier
+//   - re-categorizing TO vendor without a tier defaults to 'standard'
+function mergedTier(existing, patch) {
+  const category = patch.category !== undefined ? patch.category : existing.category;
+  const tier = patch.footprintTier !== undefined ? patch.footprintTier : existing.footprintTier ?? null;
+  if (category !== 'vendor') {
+    if (patch.footprintTier != null) throw footprintError(category);
+    return null;
+  }
+  return tier ?? 'standard';
 }
 
 export async function updatePoi(id, patch) {
   if (db.enabled) {
+    const { rows: existingRows } = await db.getPool().query(
+      'SELECT category, footprint_tier FROM poi WHERE id = $1', [id]
+    );
+    if (!existingRows.length) return null;
+    const tier = mergedTier(rowToPoi(existingRows[0]), patch);
+
     const sets = [];
     const params = [id];
     const add = (sql, val) => { params.push(val); sets.push(`${sql} = $${params.length}`); };
@@ -105,6 +149,9 @@ export async function updatePoi(id, patch) {
     if (patch.name !== undefined) add('name', patch.name);
     if (patch.floorLevel !== undefined) add('floor_level', patch.floorLevel);
     if (patch.liveStatus !== undefined) add('live_status', patch.liveStatus);
+    if (patch.category !== undefined || patch.footprintTier !== undefined) {
+      add('footprint_tier', tier);
+    }
     if (patch.lat !== undefined && patch.lng !== undefined) {
       params.push(patch.lng, patch.lat);
       sets.push(`location = ST_SetSRID(ST_MakePoint($${params.length - 1}, $${params.length}), 4326)::geography`);
@@ -115,17 +162,19 @@ export async function updatePoi(id, patch) {
       `UPDATE poi SET ${sets.join(', ')} WHERE id = $1
        RETURNING id, category, name,
                  ST_Y(location::geometry) AS lat, ST_X(location::geometry) AS lng,
-                 floor_level, live_status`,
+                 floor_level, live_status, footprint_tier`,
       params
     );
     return rows.length ? rowToPoi(rows[0]) : null;
   }
   const existing = memory.get(id);
   if (!existing) return null;
+  const tier = mergedTier(existing, patch);
   const updated = { ...existing };
   for (const k of ['category', 'name', 'lat', 'lng', 'floorLevel', 'liveStatus']) {
     if (patch[k] !== undefined) updated[k] = patch[k];
   }
+  updated.footprintTier = tier;
   memory.set(id, updated);
   return updated;
 }
@@ -150,6 +199,11 @@ const DEMO_SET = [
   { category: 'restroom', name: 'Restrooms — Main Lodge',   east: -79,  north: 44, floorLevel: '1' },
   { category: 'medic',    name: 'First Aid Tent',           east: 64,   north: -44 },
   { category: 'food',     name: 'Grill Shack',              east: 40,   north: 78 },
+  // One vendor per footprint tier, close together in bearing, so the AR
+  // tier prominence (size/badge/stack priority) is visible in a live test.
+  { category: 'vendor',   name: 'Taco Truck',               east: -95,  north: -60, footprintTier: 'standard' },
+  { category: 'vendor',   name: 'Lakeside Lemonade',        east: -108, north: -48, footprintTier: 'featured' },
+  { category: 'vendor',   name: 'Resort Merch Tent',        east: -120, north: -70, footprintTier: 'premium' },
 ];
 
 export async function seedDemo({ lat, lng }) {
@@ -168,6 +222,7 @@ export async function seedDemo({ lat, lng }) {
       lat: lat + d.north / mPerDegLat,
       lng: lng + d.east / mPerDegLng,
       floorLevel: d.floorLevel,
+      footprintTier: d.footprintTier,
     }));
   }
   return created;

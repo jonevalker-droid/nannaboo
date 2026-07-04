@@ -269,9 +269,11 @@ function ZonesPanel({ staff, code, mapCenter }) {
 
 // ---------------------------------------------------------------- POIs
 
+const FOOTPRINT_TIERS = ['standard', 'featured', 'premium'];
+
 function PoiPanel({ staff, mapCenter }) {
   const [pois, setPois] = useState([]);
-  const [form, setForm] = useState({ category: 'exit', name: '' });
+  const [form, setForm] = useState({ category: 'exit', name: '', footprintTier: 'standard' });
   const [err, setErr] = useState('');
 
   const refresh = useCallback(() =>
@@ -282,34 +284,64 @@ function PoiPanel({ staff, mapCenter }) {
     api(staff, path, opts).then(refresh).catch((e) => setErr(e.message));
 
   const categories = ['exit', 'restroom', 'medic', 'food', 'drink', 'water', 'info',
-    'charging', 'atm', 'lost_and_found', 'parking', 'rideshare', 'quiet_room', 'other'];
+    'charging', 'atm', 'lost_and_found', 'parking', 'rideshare', 'quiet_room',
+    'vendor', 'other'];
+
+  const create = () => {
+    // footprintTier goes up only for vendors — the API rejects it anywhere
+    // else (safety categories are structurally untierable at the data layer).
+    const body = { category: form.category, name: form.name, lat: mapCenter.lat, lng: mapCenter.lng };
+    if (form.category === 'vendor') body.footprintTier = form.footprintTier;
+    write('/pois', { method: 'POST', body: JSON.stringify(body) })
+      .then(() => setForm({ ...form, name: '' }));
+  };
 
   return (
     <section className="dash-panel">
-      <header><h2>POI management</h2></header>
+      <header>
+        <h2>POI management</h2>
+        <span className="dash-muted">vendor footprint = AR prominence (screen styling, not spatial)</span>
+      </header>
       {err && <p className="dash-error">{err}</p>}
       <div className="dash-form-row">
         <select value={form.category} onChange={(e) => setForm({ ...form, category: e.target.value })}>
           {categories.map((c) => <option key={c} value={c}>{c.replace(/_/g, ' ')}</option>)}
         </select>
-        <input placeholder="POI name" value={form.name}
+        {form.category === 'vendor' && (
+          <select value={form.footprintTier} aria-label="Footprint tier"
+            onChange={(e) => setForm({ ...form, footprintTier: e.target.value })}>
+            {FOOTPRINT_TIERS.map((t) => <option key={t} value={t}>{t}</option>)}
+          </select>
+        )}
+        <input placeholder={form.category === 'vendor' ? 'Vendor name' : 'POI name'} value={form.name}
           onChange={(e) => setForm({ ...form, name: e.target.value })} />
         <button className="dash-primary" disabled={!form.name.trim() || !mapCenter}
           title={mapCenter ? 'places at density-map center' : 'move the density map first'}
-          onClick={() => write('/pois', {
-            method: 'POST',
-            body: JSON.stringify({ ...form, lat: mapCenter.lat, lng: mapCenter.lng }),
-          }).then(() => setForm({ ...form, name: '' }))}>
+          onClick={create}>
           Add at map center
         </button>
       </div>
       <table className="dash-table">
-        <thead><tr><th>POI</th><th>Category</th><th>Live status</th><th /></tr></thead>
+        <thead><tr><th>POI</th><th>Category</th><th>Footprint</th><th>Live status</th><th /></tr></thead>
         <tbody>
           {pois.map((p) => (
             <tr key={p.id}>
               <td>{p.name}</td>
               <td>{p.category.replace(/_/g, ' ')}</td>
+              <td>
+                {p.category === 'vendor' ? (
+                  <select value={p.footprintTier ?? 'standard'} aria-label={`Footprint tier for ${p.name}`}
+                    onChange={(e) =>
+                      write(`/pois/${p.id}`, {
+                        method: 'PUT',
+                        body: JSON.stringify({ footprintTier: e.target.value }),
+                      })}>
+                    {FOOTPRINT_TIERS.map((t) => <option key={t} value={t}>{t}</option>)}
+                  </select>
+                ) : (
+                  <span className="dash-muted" title="Only vendors carry a footprint tier — safety POIs always render at full standard prominence">—</span>
+                )}
+              </td>
               <td>
                 <input className="dash-inline-input" defaultValue={p.liveStatus ?? ''}
                   placeholder="e.g. long line"
