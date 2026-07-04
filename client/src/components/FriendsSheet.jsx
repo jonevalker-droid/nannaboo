@@ -1,6 +1,76 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { haversineMeters, bearingDeg, formatDistance, cardinal } from '../lib/geo';
 import { VISIBILITY_OPTIONS } from './JoinForm';
+
+// Privacy & Safety settings (Prompt 7): the same choices made at onboarding,
+// reviewable/changeable anytime — visibility, security identity sharing,
+// the persistent medical profile, per-friend sharing levels, plus the
+// data-retention notice with the venue's REAL configured purge window.
+function MedicalSection({ rosterConsent, medicalResult, onSaveMedical }) {
+  const [text, setText] = useState(() => localStorage.getItem('nb_medical_profile') ?? '');
+  const [dirty, setDirty] = useState(false);
+  return (
+    <div className="medical-section">
+      <h4>⚕ Medical info (optional)</h4>
+      {rosterConsent ? (
+        <>
+          <textarea
+            rows={2}
+            maxLength={500}
+            value={text}
+            placeholder="e.g. Type 1 diabetic, penicillin allergy"
+            onChange={(e) => { setText(e.target.value); setDirty(true); }}
+          />
+          <div className="medical-actions">
+            <button
+              className="mini-btn"
+              disabled={!dirty}
+              onClick={() => { onSaveMedical(text.trim()); setDirty(false); }}
+            >
+              Save
+            </button>
+            {medicalResult && !dirty && (
+              <small className={medicalResult.saved ? 'medical-ok' : 'medical-err'}>
+                {medicalResult.saved ? '✓ saved (encrypted)' : medicalResult.error}
+              </small>
+            )}
+          </div>
+          <p className="friends-hint">
+            Stored encrypted; shown only to security responding to you,
+            alongside your name.
+          </p>
+        </>
+      ) : (
+        <p className="friends-hint">
+          Medical info needs identity sharing with security turned on (above)
+          — otherwise responders can't connect it to you.
+        </p>
+      )}
+    </div>
+  );
+}
+
+function RetentionNotice() {
+  const [hours, setHours] = useState(null);
+  useEffect(() => {
+    fetch('/api/venue/retention')
+      .then((r) => r.json())
+      .then((d) => setHours(d.hours))
+      .catch(() => {});
+  }, []);
+  return (
+    <section>
+      <h4>🗑 Your data</h4>
+      <p className="friends-hint">
+        Raw location history is deleted after{' '}
+        <strong>{hours ?? '…'} hours</strong>. Venue safety staff always see
+        an anonymous dot for everyone on site (part of entry — never your
+        name unless you opted in above). Only anonymous totals are kept
+        longer, and every identified security view is logged and auditable.
+      </p>
+    </section>
+  );
+}
 
 const LEVEL_LABELS = {
   off: 'Off',
@@ -94,6 +164,7 @@ export default function FriendsSheet({
   user, peers, myPos, friendState, friendActions,
   visibility, onChangeVisibility,
   rosterConsent, onChangeRosterConsent,
+  medicalResult, onSaveMedical,
   onClose, onLocate,
 }) {
   const { friends, sent, received } = friendState;
@@ -115,7 +186,7 @@ export default function FriendsSheet({
     <div className="sheet-overlay" onClick={onClose}>
       <div className="sheet friends-sheet" onClick={(e) => e.stopPropagation()}>
         <div className="friends-header">
-          <h3>Friends</h3>
+          <h3>Friends &amp; Privacy</h3>
           <button className="friends-close" onClick={onClose} aria-label="Close">✕</button>
         </div>
 
@@ -154,6 +225,11 @@ export default function FriendsSheet({
               </small>
             </span>
           </label>
+          <MedicalSection
+            rosterConsent={rosterConsent}
+            medicalResult={medicalResult}
+            onSaveMedical={onSaveMedical}
+          />
         </section>
 
         {received.length > 0 && (
@@ -248,6 +324,8 @@ export default function FriendsSheet({
         </section>
 
         <SocialConnect />
+
+        <RetentionNotice />
       </div>
     </div>
   );

@@ -354,8 +354,8 @@ export function memoryIdentifiedIncidents({ eventKey, group }) {
  * database). In-memory mode has no history and reports only the live
  * session-derived figures, flagged memoryMode.
  */
-export async function analytics({ eventId, group }) {
-  if (db.enabled && eventId) {
+async function computeLiveAggregates(eventId) {
+  {
     const pool = db.getPool();
     const [dwell, entries, exits, peaks] = await Promise.all([
       pool.query(
@@ -406,11 +406,83 @@ export async function analytics({ eventId, group }) {
       ),
     ]);
     return {
-      memoryMode: false,
       dwell: dwell.rows[0],
       entriesByHour: entries.rows,
       exitsByHour: exits.rows,
       peakWindows: peaks.rows,
+    };
+  }
+}
+
+// Merge live aggregates with a prior rollup: hours already purged from raw
+// data survive via the rollup; overlapping hours take the larger count
+// (the pre-purge computation saw the fuller data).
+function mergeAggregates(live, rolled) {
+  if (!rolled) return live;
+  const mergeHours = (a, b) => {
+    const m = new Map(b.map((r) => [r.hour, r.count]));
+    for (const r of a) m.set(r.hour, Math.max(m.get(r.hour) ?? 0, r.count));
+    return [...m.entries()].map(([hour, count]) => ({ hour, count }))
+      .sort((x, y) => x.hour.localeCompare(y.hour));
+  };
+  const peaks = new Map(rolled.peakWindows.map((p) => [p.window, p.guests]));
+  for (const p of live.peakWindows) {
+    peaks.set(p.window, Math.max(peaks.get(p.window) ?? 0, p.guests));
+  }
+  return {
+    dwell: (live.dwell?.guests ?? 0) >= (rolled.dwell?.guests ?? 0) ? live.dwell : rolled.dwell,
+    entriesByHour: mergeHours(live.entriesByHour, rolled.entriesByHour),
+    exitsByHour: mergeHours(live.exitsByHour, rolled.exitsByHour),
+    peakWindows: [...peaks.entries()]
+      .map(([window, guests]) => ({ window, guests }))
+      .sort((a, b) => b.guests - a.guests).slice(0, 5),
+  };
+}
+
+async function readRollup(eventId) {
+  const { rows } = await db.getPool().query(
+    `SELECT dwell, entries_by_hour, exits_by_hour, peak_windows
+     FROM analytics_rollup WHERE event_id = $1`,
+    [eventId]
+  );
+  if (!rows.length) return null;
+  return {
+    dwell: rows[0].dwell,
+    entriesByHour: rows[0].entries_by_hour,
+    exitsByHour: rows[0].exits_by_hour,
+    peakWindows: rows[0].peak_windows,
+  };
+}
+
+/**
+ * Called by the retention purge BEFORE raw rows are deleted: fold the
+ * event's current full aggregates into analytics_rollup (merged with any
+ * previous rollup, since earlier purges already removed older raw rows).
+ */
+export async function rollupEvent(eventId) {
+  const merged = mergeAggregates(await computeLiveAggregates(eventId), await readRollup(eventId));
+  await db.getPool().query(
+    `INSERT INTO analytics_rollup (event_id, dwell, entries_by_hour, exits_by_hour, peak_windows, rolled_at)
+     VALUES ($1, $2, $3, $4, $5, now())
+     ON CONFLICT (event_id) DO UPDATE
+       SET dwell = EXCLUDED.dwell,
+           entries_by_hour = EXCLUDED.entries_by_hour,
+           exits_by_hour = EXCLUDED.exits_by_hour,
+           peak_windows = EXCLUDED.peak_windows,
+           rolled_at = now()`,
+    [eventId, JSON.stringify(merged.dwell), JSON.stringify(merged.entriesByHour),
+     JSON.stringify(merged.exitsByHour), JSON.stringify(merged.peakWindows)]
+  );
+}
+
+export async function analytics({ eventId, group }) {
+  if (db.enabled && eventId) {
+    const live = await computeLiveAggregates(eventId);
+    const rolled = await readRollup(eventId);
+    return {
+      memoryMode: false,
+      source: rolled ? 'live+rollup' : 'live',
+      ...mergeAggregates(live, rolled),
     };
   }
   // Live-only view: no persisted history without the database.

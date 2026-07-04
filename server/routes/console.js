@@ -64,6 +64,7 @@ export default function createConsoleRouter({ getLiveGroup }) {
         lat: g.lat, lng: g.lng,
         confidence: g.lat != null ? confidenceFor(g.accuracy) : null,
         recorded_at: new Date(g.lastSeen).toISOString(),
+        medical_info: consentStore.getMedicalInfo(g.id), // persistent profile
       });
     }
     return rows;
@@ -137,6 +138,7 @@ export default function createConsoleRouter({ getLiveGroup }) {
         incident_id: req.params.id, subject_guest_id: subjectId,
         subject_name: g?.name ?? null, lat: g?.lat ?? null, lng: g?.lng ?? null,
         confidence: g?.lat != null ? confidenceFor(g.accuracy) : null,
+        medical_info: consentStore.getMedicalInfo(subjectId), // profile ≠ SOS note
       },
       audited: false, memoryMode: true,
     });

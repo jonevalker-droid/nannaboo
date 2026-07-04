@@ -8,6 +8,15 @@
 // friend_sharing grant written on join). Phase 2 dashboards must build on
 // these functions rather than querying position_fix/guest directly.
 import { getPool, isUuid } from './index.js';
+import { decryptMedical } from '../consentStore.js';
+
+// Decrypt guest.medical_info_enc onto a row as medical_info (or null).
+// Only ever called on rows that already passed an audited identified path.
+const withMedical = (row) => {
+  if (!row) return row;
+  const { medical_info_enc, ...rest } = row;
+  return { ...rest, medical_info: decryptMedical(medical_info_enc) };
+};
 
 export class AccessDeniedError extends Error {
   constructor(message) {
@@ -90,7 +99,7 @@ export async function lookupIdentifiedGuest({ staffSessionId, guestId, eventId, 
     requireReason(reasonCode);
     const staff = await requireStaffSession(client, staffSessionId, ['security']);
     const { rows } = await client.query(
-      `SELECT g.id, g.display_name, g.last_seen_at,
+      `SELECT g.id, g.display_name, g.last_seen_at, g.medical_info_enc,
               ST_Y(pf.location::geometry) AS lat, ST_X(pf.location::geometry) AS lng,
               pf.accuracy_m, pf.confidence, pf.recorded_at
        FROM guest g
@@ -112,7 +121,7 @@ export async function lookupIdentifiedGuest({ staffSessionId, guestId, eventId, 
       [staff.id, guestId,
        JSON.stringify({ eventId: eventId ?? null, role: staff.role, reasonCode })]
     );
-    return rows[0];
+    return withMedical(rows[0]);
   });
 }
 
@@ -126,7 +135,7 @@ export async function listIdentifiedRoster({ staffSessionId, eventId, reasonCode
     requireReason(reasonCode);
     const staff = await requireStaffSession(client, staffSessionId, ['security']);
     const { rows } = await client.query(
-      `SELECT g.id, g.display_name,
+      `SELECT g.id, g.display_name, g.medical_info_enc,
               ST_Y(pf.location::geometry) AS lat, ST_X(pf.location::geometry) AS lng,
               pf.confidence, pf.recorded_at
        FROM guest g
@@ -148,6 +157,7 @@ export async function listIdentifiedRoster({ staffSessionId, eventId, reasonCode
         })]
       );
     }
+    const out = rows.map(withMedical);
     if (bulkExport) {
       await client.query(
         `INSERT INTO audit_log (actor, actor_staff_session_id, action, detail)
@@ -155,7 +165,7 @@ export async function listIdentifiedRoster({ staffSessionId, eventId, reasonCode
         [staff.id, JSON.stringify({ eventId, count: rows.length, role: staff.role, reasonCode })]
       );
     }
-    return rows;
+    return out;
   });
 }
 
@@ -268,7 +278,7 @@ export async function identifyIncidentSubject({ staffSessionId, incidentId, even
     const staff = await requireStaffSession(client, staffSessionId, ['security']);
     const { rows } = await client.query(
       `SELECT i.id AS incident_id, i.category, i.subject_guest_id,
-              g.display_name AS subject_name, g.last_seen_at,
+              g.display_name AS subject_name, g.last_seen_at, g.medical_info_enc,
               ST_Y(pf.location::geometry) AS lat, ST_X(pf.location::geometry) AS lng,
               pf.confidence, pf.recorded_at
        FROM incident_log i
@@ -288,7 +298,9 @@ export async function identifyIncidentSubject({ staffSessionId, incidentId, even
       [staff.id, rows[0].subject_guest_id,
        JSON.stringify({ eventId: eventId ?? null, via: 'incident_identify', incidentId, role: staff.role, reasonCode })]
     );
-    return rows[0];
+    // medical_info here is the PERSISTENT profile — the console labels it
+    // distinctly from the SOS-time note (incident description).
+    return withMedical(rows[0]);
   });
 }
 

@@ -5,6 +5,7 @@
 import { Router } from 'express';
 import * as geofence from '../geofence.js';
 import * as db from '../db/index.js';
+import * as dashboardStore from '../dashboardStore.js';
 
 const router = Router();
 
@@ -51,6 +52,28 @@ router.delete('/boundary', requireAdmin, (_req, res) => {
   geofence.setBoundary(null);
   db.saveVenueBoundary(null);
   res.status(204).end();
+});
+
+// ---- data retention (Prompt 7) ----
+// Public read: the guest onboarding/settings notice shows the REAL
+// configured window, never a hardcoded placeholder.
+router.get('/retention', (_req, res) => {
+  res.json({ hours: db.getRetentionHours() });
+});
+
+router.put('/retention', requireAdmin, (req, res) => {
+  const hours = Number(req.body?.hours);
+  if (!Number.isFinite(hours) || hours < 1 || hours > 720) {
+    return res.status(400).json({ error: 'hours must be between 1 and 720' });
+  }
+  db.setRetentionHours(Math.round(hours));
+  res.json({ hours: db.getRetentionHours() });
+});
+
+// Manual trigger (the hourly job runs automatically) — lets an admin verify
+// the purge on the live deploy without waiting for the interval.
+router.post('/purge-now', requireAdmin, async (_req, res) => {
+  res.json(await db.purgeExpiredPositions(dashboardStore.rollupEvent));
 });
 
 export default router;

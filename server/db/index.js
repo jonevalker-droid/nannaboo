@@ -37,10 +37,11 @@ export async function init() {
     });
     await runMigrations(pool);
     const { rows } = await pool.query(
-      'SELECT id FROM venue WHERE slug = $1', [DEFAULT_VENUE_SLUG]
+      'SELECT id, position_retention_hours FROM venue WHERE slug = $1', [DEFAULT_VENUE_SLUG]
     );
     if (!rows.length) throw new Error(`default venue '${DEFAULT_VENUE_SLUG}' not found`);
     defaultVenueId = rows[0].id;
+    retentionHours = rows[0].position_retention_hours ?? retentionHours;
     enabled = true;
     console.log('[db] connected, migrations applied');
   } catch (err) {
@@ -149,6 +150,61 @@ export async function grantConsent(guestId, eventId, scope) {
 export async function grantJoinConsents(guestId, eventId) {
   for (const scope of ['friend_sharing', 'venue_safety_network']) {
     await grantConsent(guestId, eventId, scope);
+  }
+}
+
+// ---- data retention (Prompt 7) ----
+// Raw location logs live for a fixed, per-venue window and are then purged.
+// The number is CONFIG (venue.position_retention_hours in DB mode,
+// POSITION_RETENTION_HOURS env in memory mode), never hardcoded in app
+// logic — the guest-facing notice reads it from GET /api/venue/retention.
+let retentionHours = Number(process.env.POSITION_RETENTION_HOURS) || 48;
+
+export function getRetentionHours() {
+  return retentionHours;
+}
+
+export async function setRetentionHours(hours) {
+  retentionHours = hours;
+  if (!enabled) return;
+  try {
+    await pool.query(
+      'UPDATE venue SET position_retention_hours = $2 WHERE id = $1',
+      [defaultVenueId, hours]
+    );
+  } catch (err) {
+    logError('setRetentionHours', err);
+  }
+}
+
+/**
+ * Purge raw position_fix rows past the retention window. For every affected
+ * event, `rollupEvent` runs FIRST so aggregated, anonymized analytics
+ * survive the deletion (they identify nobody, so they may be kept longer).
+ * Memory mode is a no-op: it never retains raw logs at all.
+ */
+export async function purgeExpiredPositions(rollupEvent) {
+  if (!enabled) return { purged: 0, rolledUp: 0, retentionHours };
+  try {
+    const { rows: events } = await pool.query(
+      `SELECT DISTINCT event_id FROM position_fix
+       WHERE event_id IS NOT NULL
+         AND recorded_at < now() - ($1 || ' hours')::interval`,
+      [retentionHours]
+    );
+    for (const e of events) {
+      await rollupEvent(e.event_id);
+    }
+    const { rowCount } = await pool.query(
+      `DELETE FROM position_fix
+       WHERE recorded_at < now() - ($1 || ' hours')::interval`,
+      [retentionHours]
+    );
+    if (rowCount) console.log(`[retention] purged ${rowCount} raw position rows (> ${retentionHours}h)`);
+    return { purged: rowCount, rolledUp: events.length, retentionHours };
+  } catch (err) {
+    logError('purgeExpiredPositions', err);
+    return { purged: 0, rolledUp: 0, retentionHours, error: err.message };
   }
 }
 

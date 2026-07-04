@@ -272,7 +272,15 @@ function Inbox({ api, code, staff }) {
               <span className="dash-muted">📍 {fmtPos(inc)}</span>
               {inc.assigned_staff_id && <span className="dash-chip">assigned</span>}
             </div>
-            {inc.description && <p className="console-incident-note">{inc.description}</p>}
+            {inc.description && (
+              <p className="console-incident-note">
+                {/* SOS-time note ≠ persistent medical profile: this is what
+                    the guest typed when pressing 🆘 (or a staff report). */}
+                {inc.category === 'sos'
+                  ? <><strong>SOS note:</strong> {inc.description.replace(/^Guest SOS( — )?/, '') || '(none)'}</>
+                  : inc.description}
+              </p>
+            )}
             <div className="console-incident-actions">
               {inc.status !== 'resolved' && (
                 <>
@@ -296,6 +304,9 @@ function Inbox({ api, code, staff }) {
                   👤 <strong>{idn.subject.subject_name ?? 'unknown'}</strong>
                   {' · '}{fmtPos(idn.subject)}
                   {idn.subject.confidence != null && ` · conf ${Math.round(idn.subject.confidence * 100)}%`}
+                  {idn.subject.medical_info && (
+                    <span className="console-medical">⚕ Profile: {idn.subject.medical_info}</span>
+                  )}
                   <em className="dash-muted"> (view audited)</em>
                 </span>
               )}
@@ -398,7 +409,7 @@ function Roster({ api, code }) {
             <p className="dash-muted">Nobody has opted into the identified roster for this event.</p>
           )}
           <table className="dash-table">
-            <thead><tr><th /><th>Name</th><th>Last known position</th><th>Confidence</th><th>Seen</th></tr></thead>
+            <thead><tr><th /><th>Name</th><th>Medical (profile)</th><th>Last known position</th><th>Confidence</th><th>Seen</th></tr></thead>
             <tbody>
               {visible.map((r) => (
                 <tr key={r.id}>
@@ -410,6 +421,9 @@ function Roster({ api, code }) {
                     </span>
                   </td>
                   <td>{r.display_name}</td>
+                  <td className="console-medical-cell">
+                    {r.medical_info ? <>⚕ {r.medical_info}</> : '—'}
+                  </td>
                   <td>{fmtPos(r)}</td>
                   <td>
                     {r.confidence != null ? (

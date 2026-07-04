@@ -77,6 +77,18 @@
 
 .console-conf .dash-meter { width: 60px; display: inline-block; }
 
+.console-medical,
+.console-medical-cell {
+  color: #b71c1c;
+  font-weight: 600;
+}
+
+.console-medical {
+  display: block;
+  font-size: 12.5px;
+  margin-top: 2px;
+}
+
 /* modals */
 
 .console-modal-overlay {

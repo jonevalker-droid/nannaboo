@@ -301,6 +301,108 @@ html, body, #root {
   min-height: 2.4em;
 }
 
+/* ─── Onboarding (Prompt 7) ───────────────────────────────────── */
+
+.onboarding-progress {
+  display: flex;
+  gap: 5px;
+  margin-bottom: 18px;
+}
+
+.onboarding-progress i {
+  flex: 1;
+  height: 4px;
+  border-radius: 2px;
+  background: #e4e2de;
+}
+
+.onboarding-progress i.done { background: #1a73e8; }
+
+.onboarding-step {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  text-align: left;
+}
+
+.onboarding-step h2 { margin: 0; font-size: 20px; }
+.onboarding-step p { margin: 0; font-size: 14.5px; color: #444; line-height: 1.45; }
+
+.onboarding-hint { color: #777 !important; font-size: 13px !important; }
+.onboarding-ok { color: #0ca30c !important; font-weight: 700; }
+.onboarding-warn { color: #b26a00 !important; font-size: 13px !important; }
+.onboarding-optional { font-size: 13px; color: #999; font-weight: 400; }
+
+.onboarding-primary {
+  background: #1a73e8;
+  color: white;
+  border: none;
+  border-radius: 12px;
+  padding: 13px;
+  font-size: 16px;
+  font-weight: 700;
+  cursor: pointer;
+  width: 100%;
+}
+
+.onboarding-skip {
+  background: none;
+  border: none;
+  color: #777;
+  font-size: 14px;
+  padding: 8px;
+  cursor: pointer;
+  width: 100%;
+}
+
+.onboarding-toggle { margin-top: 4px; }
+
+.onboarding-step textarea {
+  width: 100%;
+  border: 1px solid #d5d4d0;
+  border-radius: 10px;
+  padding: 10px;
+  font-size: 15px;
+  font-family: inherit;
+  resize: none;
+}
+
+.onboarding-data-list {
+  margin: 0;
+  padding-left: 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  font-size: 14px;
+  color: #444;
+  line-height: 1.45;
+}
+
+/* ─── Medical section (Friends & Privacy sheet) ───────────────── */
+
+.medical-section { margin-top: 14px; }
+.medical-section h4 { margin: 0 0 6px; }
+
+.medical-section textarea {
+  width: 100%;
+  border: 1px solid #d5d4d0;
+  border-radius: 10px;
+  padding: 8px 10px;
+  font-size: 14px;
+  font-family: inherit;
+  resize: none;
+}
+
+.medical-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 6px;
+}
+
+.medical-ok { color: #0ca30c; }
+.medical-err { color: #d32f2f; }
+
 /* ─── SOS ─────────────────────────────────────────────────────── */
 
 .sos-btn {

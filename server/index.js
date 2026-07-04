@@ -312,6 +312,23 @@ wss.on('connection', (ws) => {
       }
     }
 
+    // Persistent medical profile (Prompt 7). The roster-consent dependency
+    // is enforced inside consentStore.setMedicalInfo (data layer), so a
+    // hand-crafted message without identity sharing is rejected there.
+    if (msg.type === 'setMedicalInfo') {
+      const guest = group.guests.get(guestId);
+      if (!guest) return;
+      const text = typeof msg.text === 'string' ? msg.text : null;
+      (async () => {
+        const eventId = group.eventId
+          ?? (db.enabled ? await db.ensureEventForGroup(groupCode) : null);
+        const result = await consentStore.setMedicalInfo(guestId, eventId, `code:${groupCode}`, text);
+        if (guest.ws.readyState === 1) {
+          guest.ws.send(JSON.stringify({ type: 'medicalInfo', saved: result.ok, error: result.error ?? null }));
+        }
+      })().catch(err => console.error('[medical] set failed:', err.message));
+    }
+
     // Guest-triggered SOS: lands in the security console inbox as the
     // highest-priority incident. The note is whatever the guest chose to
     // send (e.g. medical info) — consented by the act of sending it.
@@ -416,4 +433,10 @@ db.init().then(async () => {
   if (boundary && geofence.setBoundary(boundary)) {
     console.log('[venue] geofence boundary loaded from DB');
   }
+  // Retention purge (Prompt 7): hourly, and once shortly after boot. Rolls
+  // up aggregated analytics per event before deleting raw position rows.
+  const purge = () => db.purgeExpiredPositions(dashboardStore.rollupEvent)
+    .catch(err => console.error('[retention] purge failed:', err.message));
+  setTimeout(purge, 60_000);
+  setInterval(purge, 60 * 60_000);
 });

@@ -140,6 +140,7 @@ export default function MapView({
   myPos, geoStatus, geoDetail, onGeoRetry,
   visibility, onChangeVisibility, insideVenue,
   rosterConsent, onChangeRosterConsent,
+  medicalResult, onSaveMedical,
   sosState, onSendSos, onResetSos,
   onAddPin, onRemovePin,
 }) {
@@ -499,6 +500,8 @@ export default function MapView({
           onChangeVisibility={onChangeVisibility}
           rosterConsent={rosterConsent}
           onChangeRosterConsent={onChangeRosterConsent}
+          medicalResult={medicalResult}
+          onSaveMedical={onSaveMedical}
           onClose={() => setShowFriends(false)}
           onLocate={locateFriend}
         />

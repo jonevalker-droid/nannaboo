@@ -32,9 +32,10 @@ export type PoiCategory =
   | 'other';
 
 export type ConsentScope =
-  | 'venue_safety_network'       // anonymous presence visible to venue safety ops
+  | 'venue_safety_network'       // anonymous presence visible to venue safety ops (condition of entry)
   | 'identified_security_roster' // name + position visible to security staff
-  | 'friend_sharing';            // position visible to linked friends
+  | 'friend_sharing'             // position visible to linked friends
+  | 'medical_info';              // persistent medical profile visible to security (requires roster)
 
 export type SharingLevel = 'off' | 'this_event_only' | 'always';
 
@@ -104,6 +105,8 @@ export interface Guest {
   id: Uuid;
   displayName: string;
   visibilityMode: VisibilityMode;
+  /** AES-256-GCM ciphertext; write requires identified_security_roster consent. */
+  medicalInfoEnc: string | null;
   createdAt: IsoTimestamp;
   lastSeenAt: IsoTimestamp;
 }

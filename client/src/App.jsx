@@ -1,8 +1,11 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import JoinForm from './components/JoinForm';
+import Onboarding from './components/Onboarding';
 import NearestExits from './components/NearestExits';
 import MapView from './components/MapView';
 import './App.css';
+
+const VISIBILITY_VALUES = ['public', 'friends_only', 'off'];
 
 function getOrCreateGuestId() {
   let id = localStorage.getItem('nb_guest_id');
@@ -34,6 +37,7 @@ export default function App() {
     () => localStorage.getItem('nb_roster_consent') === '1'
   );
   const [sosState, setSosState] = useState('idle'); // idle | sending | acked
+  const [medicalResult, setMedicalResult] = useState(null); // last setMedicalInfo ack
   const [myPos, setMyPos] = useState(null);
   const [geoStatus, setGeoStatus] = useState('locating'); // locating | ok | denied | unavailable
   const [geoDetail, setGeoDetail] = useState(null); // last error message, shown in the banner
@@ -81,6 +85,9 @@ export default function App() {
         setFriendState({ friends: msg.friends, sent: msg.sent, received: msg.received });
       }
       if (msg.type === 'sosAck') setSosState('acked');
+      if (msg.type === 'medicalInfo') {
+        setMedicalResult({ saved: msg.saved, error: msg.error, at: Date.now() });
+      }
     };
 
     ws.onclose = () => {
@@ -223,7 +230,9 @@ export default function App() {
     };
   }, [retryGeo]);
 
-  const handleJoin = useCallback((name, groupCode, chosenVisibility) => {
+  const handleJoin = useCallback((name, groupCode) => {
+    const stored = localStorage.getItem('nb_visibility');
+    const chosenVisibility = VISIBILITY_VALUES.includes(stored) ? stored : 'public';
     const userData = {
       id: getOrCreateGuestId(),
       name,
@@ -233,12 +242,18 @@ export default function App() {
     userRef.current = userData;
     setUser(userData);
     setVisibility(chosenVisibility);
-    // Exit-first safety screen comes before the friend map; the WebSocket
-    // and GPS watch start underneath it so the map is live — and our position
-    // already broadcasting — the moment they continue.
-    setPhase('exits');
     connect(userData);
-    startGeoWatch();
+    if (localStorage.getItem('nb_onboarded') === '1') {
+      // Returning guest: skip straight to the exits screen; the GPS watch
+      // starts immediately (permission was decided in a previous session).
+      setPhase('exits');
+      startGeoWatch();
+    } else {
+      // First-timer: guided consent onboarding. Deliberately NO geolocation
+      // yet — the OS prompt fires only after the "why we ask" step's
+      // Continue tap (cold prompts get reflexively denied).
+      setPhase('onboard');
+    }
   }, [connect, startGeoWatch]);
 
   const handleExitsSeen = useCallback(() => setPhase('map'), []);
@@ -280,6 +295,14 @@ export default function App() {
     sendFriendMsg({ type: 'setRosterConsent', grant });
   }, [sendFriendMsg]);
 
+  // Persistent medical profile — the DATA LAYER enforces the roster-consent
+  // dependency; this just sends and surfaces the ack.
+  const saveMedical = useCallback((text) => {
+    setMedicalResult(null);
+    localStorage.setItem('nb_medical_profile', text ?? '');
+    sendFriendMsg({ type: 'setMedicalInfo', text: text || null });
+  }, [sendFriendMsg]);
+
   // Guest SOS: alerts event security with position + whatever note (e.g.
   // medical info) the guest chooses to include.
   const sendSos = useCallback((note) => {
@@ -318,6 +341,25 @@ export default function App() {
     return <JoinForm onJoin={handleJoin} />;
   }
 
+  if (phase === 'onboard') {
+    return (
+      <Onboarding
+        geoStatus={geoStatus}
+        onRequestLocation={() => startGeoWatch('onboarding')}
+        visibility={visibility}
+        onChangeVisibility={changeVisibility}
+        rosterConsent={rosterConsent}
+        onChangeRosterConsent={changeRosterConsent}
+        medicalResult={medicalResult}
+        onSaveMedical={saveMedical}
+        onComplete={() => {
+          localStorage.setItem('nb_onboarded', '1');
+          setPhase('exits');
+        }}
+      />
+    );
+  }
+
   if (phase === 'exits') {
     return <NearestExits onContinue={handleExitsSeen} />;
   }
@@ -339,6 +381,8 @@ export default function App() {
       insideVenue={insideVenue}
       rosterConsent={rosterConsent}
       onChangeRosterConsent={changeRosterConsent}
+      medicalResult={medicalResult}
+      onSaveMedical={saveMedical}
       sosState={sosState}
       onSendSos={sendSos}
       onResetSos={() => setSosState('idle')}
