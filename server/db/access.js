@@ -16,6 +16,23 @@ export class AccessDeniedError extends Error {
   }
 }
 
+// Every identified read carries one of these in its audit row (Prompt 6).
+// A missing/unknown code is an AccessDeniedError — the reason is part of the
+// authorization, not decoration.
+export const REASON_CODES = [
+  'sos_response', 'medical', 'lost_person', 'wellness_check',
+  'incident_investigation', 'dispatch', 'shift_handover', 'other',
+];
+
+export function requireReason(reasonCode) {
+  if (!REASON_CODES.includes(reasonCode)) {
+    throw new AccessDeniedError(
+      `a reason code is required: ${REASON_CODES.join(', ')}`
+    );
+  }
+  return reasonCode;
+}
+
 // SQL fragment: guest $N has an active grant for scope $M covering event $E.
 // A grant with event_id NULL covers all events. Exported so aggregated
 // dashboard queries (dashboardStore.js) apply the same consent filter.
@@ -66,10 +83,11 @@ async function withTransaction(fn) {
  * Requires the guest's active identified_security_roster consent.
  * Audited (action: identified_guest_lookup) in the same transaction.
  */
-export async function lookupIdentifiedGuest({ staffSessionId, guestId, eventId }) {
+export async function lookupIdentifiedGuest({ staffSessionId, guestId, eventId, reasonCode }) {
   return withTransaction(async (client) => {
     // Identified data is Security-role ONLY (Prompt 6): admins/promoters get
     // operational visibility from aggregated views, never guest identity.
+    requireReason(reasonCode);
     const staff = await requireStaffSession(client, staffSessionId, ['security']);
     const { rows } = await client.query(
       `SELECT g.id, g.display_name, g.last_seen_at,
@@ -91,7 +109,8 @@ export async function lookupIdentifiedGuest({ staffSessionId, guestId, eventId }
     await client.query(
       `INSERT INTO audit_log (actor, actor_staff_session_id, target_guest_id, action, detail)
        VALUES ($1, $1, $2, 'identified_guest_lookup', $3)`,
-      [staff.id, guestId, JSON.stringify({ eventId: eventId ?? null, role: staff.role })]
+      [staff.id, guestId,
+       JSON.stringify({ eventId: eventId ?? null, role: staff.role, reasonCode })]
     );
     return rows[0];
   });
@@ -102,8 +121,9 @@ export async function lookupIdentifiedGuest({ staffSessionId, guestId, eventId }
  * active identified_security_roster consent, with latest position.
  * One audit row per returned guest.
  */
-export async function listIdentifiedRoster({ staffSessionId, eventId }) {
+export async function listIdentifiedRoster({ staffSessionId, eventId, reasonCode, bulkExport = false }) {
   return withTransaction(async (client) => {
+    requireReason(reasonCode);
     const staff = await requireStaffSession(client, staffSessionId, ['security']);
     const { rows } = await client.query(
       `SELECT g.id, g.display_name,
@@ -122,7 +142,17 @@ export async function listIdentifiedRoster({ staffSessionId, eventId }) {
       await client.query(
         `INSERT INTO audit_log (actor, actor_staff_session_id, target_guest_id, action, detail)
          VALUES ($1, $1, $2, 'identified_guest_lookup', $3)`,
-        [staff.id, row.id, JSON.stringify({ eventId, via: 'roster_list', role: staff.role })]
+        [staff.id, row.id, JSON.stringify({
+          eventId, via: bulkExport ? 'roster_bulk_export' : 'roster_list',
+          role: staff.role, reasonCode,
+        })]
+      );
+    }
+    if (bulkExport) {
+      await client.query(
+        `INSERT INTO audit_log (actor, actor_staff_session_id, action, detail)
+         VALUES ($1, $1, 'roster_bulk_export', $2)`,
+        [staff.id, JSON.stringify({ eventId, count: rows.length, role: staff.role, reasonCode })]
       );
     }
     return rows;
@@ -196,8 +226,9 @@ export async function listFriendPositions({ viewerGuestId, eventId }) {
  * they are shown to Security without a roster consent — but every view of
  * them is audited.
  */
-export async function listIdentifiedIncidents({ staffSessionId, eventId }) {
+export async function listIdentifiedIncidents({ staffSessionId, eventId, reasonCode }) {
   return withTransaction(async (client) => {
+    requireReason(reasonCode);
     const staff = await requireStaffSession(client, staffSessionId, ['security']);
     const { rows } = await client.query(
       `SELECT i.id, i.category, i.description, i.status,
@@ -217,10 +248,47 @@ export async function listIdentifiedIncidents({ staffSessionId, eventId }) {
         `INSERT INTO audit_log (actor, actor_staff_session_id, target_guest_id, action, detail)
          VALUES ($1, $1, $2, 'identified_guest_lookup', $3)`,
         [staff.id, row.subject_guest_id,
-         JSON.stringify({ eventId, via: 'incident_identified_view', incidentId: row.id, role: staff.role })]
+         JSON.stringify({ eventId, via: 'incident_identified_view', incidentId: row.id, role: staff.role, reasonCode })]
       );
     }
     return rows;
+  });
+}
+
+/**
+ * Identify ONE incident's subject (console "identify" action) — narrower
+ * than listIdentifiedIncidents so responding to a single SOS doesn't expose
+ * every subject in the log. Security role + reason code + one audit row.
+ * An SOS sender is identified regardless of roster consent: pressing SOS is
+ * the request for help; the audit row records that justification.
+ */
+export async function identifyIncidentSubject({ staffSessionId, incidentId, eventId, reasonCode }) {
+  return withTransaction(async (client) => {
+    requireReason(reasonCode);
+    const staff = await requireStaffSession(client, staffSessionId, ['security']);
+    const { rows } = await client.query(
+      `SELECT i.id AS incident_id, i.category, i.subject_guest_id,
+              g.display_name AS subject_name, g.last_seen_at,
+              ST_Y(pf.location::geometry) AS lat, ST_X(pf.location::geometry) AS lng,
+              pf.confidence, pf.recorded_at
+       FROM incident_log i
+       JOIN guest g ON g.id = i.subject_guest_id
+       LEFT JOIN LATERAL (
+         SELECT * FROM position_fix
+         WHERE guest_id = i.subject_guest_id AND ($2::uuid IS NULL OR event_id = $2)
+         ORDER BY recorded_at DESC LIMIT 1
+       ) pf ON true
+       WHERE i.id = $1 AND ($2::uuid IS NULL OR i.event_id = $2)`,
+      [incidentId, eventId ?? null]
+    );
+    if (!rows.length) throw new AccessDeniedError('incident not found or has no subject');
+    await client.query(
+      `INSERT INTO audit_log (actor, actor_staff_session_id, target_guest_id, action, detail)
+       VALUES ($1, $1, $2, 'identified_guest_lookup', $3)`,
+      [staff.id, rows[0].subject_guest_id,
+       JSON.stringify({ eventId: eventId ?? null, via: 'incident_identify', incidentId, role: staff.role, reasonCode })]
+    );
+    return rows[0];
   });
 }
 

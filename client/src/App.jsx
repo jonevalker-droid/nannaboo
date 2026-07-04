@@ -30,6 +30,10 @@ export default function App() {
   const [wsStatus, setWsStatus] = useState('disconnected');
   const [visibility, setVisibility] = useState('public');
   const [insideVenue, setInsideVenue] = useState(null); // null until server has a fix + fence
+  const [rosterConsent, setRosterConsentState] = useState(
+    () => localStorage.getItem('nb_roster_consent') === '1'
+  );
+  const [sosState, setSosState] = useState('idle'); // idle | sending | acked
   const [myPos, setMyPos] = useState(null);
   const [geoStatus, setGeoStatus] = useState('locating'); // locating | ok | denied | unavailable
   const [geoDetail, setGeoDetail] = useState(null); // last error message, shown in the banner
@@ -57,6 +61,11 @@ export default function App() {
         groupCode: userData.groupCode,
         visibility: userData.visibility,
       }));
+      // Roster consent is re-asserted on every (re)connect so the server's
+      // record survives restarts in memory mode too.
+      if (localStorage.getItem('nb_roster_consent') === '1') {
+        ws.send(JSON.stringify({ type: 'setRosterConsent', grant: true }));
+      }
     };
 
     ws.onmessage = (e) => {
@@ -71,6 +80,7 @@ export default function App() {
       if (msg.type === 'friendState') {
         setFriendState({ friends: msg.friends, sent: msg.sent, received: msg.received });
       }
+      if (msg.type === 'sosAck') setSosState('acked');
     };
 
     ws.onclose = () => {
@@ -262,6 +272,28 @@ export default function App() {
     setLevel: (friendGuestId, level) => sendFriendMsg({ type: 'friendLevel', friendGuestId, level }),
   };
 
+  // Identified-security-roster opt-in: the only scope that shows this
+  // guest's name to staff. Explicit toggle, persisted, re-sent on connect.
+  const changeRosterConsent = useCallback((grant) => {
+    setRosterConsentState(grant);
+    localStorage.setItem('nb_roster_consent', grant ? '1' : '0');
+    sendFriendMsg({ type: 'setRosterConsent', grant });
+  }, [sendFriendMsg]);
+
+  // Guest SOS: alerts event security with position + whatever note (e.g.
+  // medical info) the guest chooses to include.
+  const sendSos = useCallback((note) => {
+    const ws = wsRef.current;
+    if (!ws || ws.readyState !== WebSocket.OPEN) return;
+    setSosState('sending');
+    ws.send(JSON.stringify({
+      type: 'sos',
+      guestId: userRef.current?.id,
+      lat: myPos?.lat, lng: myPos?.lng,
+      note: note || null,
+    }));
+  }, [myPos]);
+
   // Guest-level visibility tier, editable anytime (server enforces it; the
   // localStorage copy + userRef keep it across reloads and WS reconnects).
   const changeVisibility = useCallback((mode) => {
@@ -305,6 +337,11 @@ export default function App() {
       visibility={visibility}
       onChangeVisibility={changeVisibility}
       insideVenue={insideVenue}
+      rosterConsent={rosterConsent}
+      onChangeRosterConsent={changeRosterConsent}
+      sosState={sosState}
+      onSendSos={sendSos}
+      onResetSos={() => setSosState('idle')}
       onAddPin={addPin}
       onRemovePin={removePin}
     />

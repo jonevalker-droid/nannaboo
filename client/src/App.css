@@ -301,6 +301,63 @@ html, body, #root {
   min-height: 2.4em;
 }
 
+/* ─── SOS ─────────────────────────────────────────────────────── */
+
+.sos-btn {
+  background: #d32f2f;
+  border: 2px solid rgba(255, 255, 255, 0.85);
+  border-radius: 16px;
+  color: white;
+  font-size: 14px;
+  padding: 4px 10px;
+  cursor: pointer;
+}
+
+.sos-sheet textarea {
+  width: 100%;
+  border: 1px solid #d5d4d0;
+  border-radius: 10px;
+  padding: 10px;
+  font-size: 15px;
+  font-family: inherit;
+  resize: none;
+}
+
+.sos-explain {
+  font-size: 13.5px;
+  color: #555;
+  margin: 6px 0 12px;
+}
+
+.sos-send {
+  background: #d32f2f !important;
+  color: white !important;
+  border: none !important;
+  font-weight: 800;
+}
+
+.roster-consent-row {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+  margin-top: 12px;
+  cursor: pointer;
+}
+
+.roster-consent-row input {
+  margin-top: 3px;
+  width: 18px;
+  height: 18px;
+}
+
+.roster-consent-row span { font-size: 13.5px; }
+.roster-consent-row small {
+  display: block;
+  color: #777;
+  font-size: 12px;
+  margin-top: 2px;
+}
+
 /* ─── Geofence / hidden-state banner ──────────────────────────── */
 
 .fence-banner {

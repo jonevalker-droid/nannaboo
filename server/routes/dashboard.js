@@ -112,14 +112,15 @@ export default function createDashboardRouter({ getLiveGroup }) {
   router.get('/incidents/identified', requireStaff(['security']), wrap(async (req, res) => {
     const ctx = await eventCtx(req, res);
     if (!ctx) return;
+    const reasonCode = access.requireReason(String(req.query.reason ?? ''));
     if (db.enabled) {
       // Role re-checked + audit_log written inside this call's transaction.
       const incidents = await access.listIdentifiedIncidents({
-        staffSessionId: req.staff.id, eventId: ctx.eventId,
+        staffSessionId: req.staff.id, eventId: ctx.eventId, reasonCode,
       });
       return res.json({ incidents, audited: true });
     }
-    console.log(`[audit] identified incident view by staff ${req.staff.id} (memory mode)`);
+    console.log(`[audit] identified incident view by staff ${req.staff.id} reason=${reasonCode} (memory mode)`);
     res.json({
       incidents: store.memoryIdentifiedIncidents(ctx),
       audited: false, memoryMode: true,

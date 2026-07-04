@@ -2,6 +2,7 @@ import { StrictMode } from 'react';
 import { createRoot } from 'react-dom/client';
 import App from './App.jsx';
 import Dashboard from './dashboard/Dashboard.jsx';
+import Console from './console/Console.jsx';
 
 if ('serviceWorker' in navigator) {
   window.addEventListener('load', () => {
@@ -9,11 +10,13 @@ if ('serviceWorker' in navigator) {
   });
 }
 
-// /dashboard is the staff ops console; everything else is the guest PWA.
-const isDashboard = window.location.pathname.startsWith('/dashboard');
+// /dashboard = admin/promoter ops dashboard (aggregated only),
+// /console = security console (identified, audited); everything else = guest PWA.
+const path = window.location.pathname;
+const surface = path.startsWith('/console') ? <Console />
+  : path.startsWith('/dashboard') ? <Dashboard />
+  : <App />;
 
 createRoot(document.getElementById('root')).render(
-  <StrictMode>
-    {isDashboard ? <Dashboard /> : <App />}
-  </StrictMode>
+  <StrictMode>{surface}</StrictMode>
 );

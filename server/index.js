@@ -6,11 +6,14 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import * as db from './db/index.js';
 import * as friendStore from './friendStore.js';
+import * as consentStore from './consentStore.js';
+import * as dashboardStore from './dashboardStore.js';
 import * as geofence from './geofence.js';
 import poisRouter from './routes/pois.js';
 import venueRouter from './routes/venue.js';
 import createSecurityRouter from './routes/security.js';
 import createDashboardRouter from './routes/dashboard.js';
+import createConsoleRouter from './routes/console.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PORT = process.env.PORT || 3001;
@@ -27,6 +30,9 @@ app.use('/api/security', createSecurityRouter({
   getLiveGroup: (code) => groups.get(code),
 }));
 app.use('/api/dashboard', createDashboardRouter({
+  getLiveGroup: (code) => groups.get(code),
+}));
+app.use('/api/console', createConsoleRouter({
   getLiveGroup: (code) => groups.get(code),
 }));
 
@@ -184,11 +190,15 @@ function guestsFor(viewer, group) {
     if (g.visibility === 'off') continue;
     if (g.visibility === 'friends_only'
         && !friendVisCache.get(viewer.id)?.has(g.id)) continue;
+    // rosterConsent is between the guest and security — never shown to peers.
     if (canSeePosition(viewer.id, g)) {
-      const { visibility: _v, inside: _i, ...visible } = pub;
+      const { visibility: _v, inside: _i, rosterConsent: _rc, ...visible } = pub;
       out.push(visible);
     } else {
-      const { lat: _lat, lng: _lng, accuracy: _a, heading: _h, visibility: _v, inside: _i, ...hidden } = pub;
+      const {
+        lat: _lat, lng: _lng, accuracy: _a, heading: _h,
+        visibility: _v, inside: _i, rosterConsent: _rc, ...hidden
+      } = pub;
       out.push({ ...hidden, lat: null, lng: null, accuracy: null, heading: null });
     }
   }
@@ -283,6 +293,48 @@ wss.on('connection', (ws) => {
       guest.visibility = msg.visibility;
       db.setGuestVisibility(guestId, msg.visibility);
       broadcastGroup(group);
+    }
+
+    // Explicit opt-in/out of the identified security roster (Prompt 6) —
+    // the ONLY scope that shows a guest's identity to staff. Never implied.
+    if (msg.type === 'setRosterConsent') {
+      const guest = group.guests.get(guestId);
+      if (!guest) return;
+      const grant = !!msg.grant;
+      guest.rosterConsent = grant;
+      (async () => {
+        const eventId = group.eventId
+          ?? (db.enabled ? await db.ensureEventForGroup(groupCode) : null);
+        await consentStore.setRosterConsent(guestId, eventId, `code:${groupCode}`, grant);
+      })().catch(err => console.error('[consent] setRosterConsent failed:', err.message));
+      if (guest.ws.readyState === 1) {
+        guest.ws.send(JSON.stringify({ type: 'rosterConsent', granted: grant }));
+      }
+    }
+
+    // Guest-triggered SOS: lands in the security console inbox as the
+    // highest-priority incident. The note is whatever the guest chose to
+    // send (e.g. medical info) — consented by the act of sending it.
+    if (msg.type === 'sos') {
+      const guest = group.guests.get(guestId);
+      if (!guest) return;
+      const lat = typeof msg.lat === 'number' ? msg.lat : guest.lat;
+      const lng = typeof msg.lng === 'number' ? msg.lng : guest.lng;
+      const note = msg.note ? String(msg.note).trim().slice(0, 300) : null;
+      (async () => {
+        const eventId = group.eventId
+          ?? (db.enabled ? await db.ensureEventForGroup(groupCode) : null);
+        await dashboardStore.createIncident({
+          eventId, eventKey: `code:${groupCode}`,
+          category: 'sos',
+          description: note ? `Guest SOS — ${note}` : 'Guest SOS',
+          lat: lat ?? null, lng: lng ?? null,
+          zoneId: null, subjectGuestId: guestId, reportedBy: null,
+        });
+      })().catch(err => console.error('[sos] create failed:', err.message));
+      if (guest.ws.readyState === 1) {
+        guest.ws.send(JSON.stringify({ type: 'sosAck', at: Date.now() }));
+      }
     }
 
     if (msg.type === 'addPin') {

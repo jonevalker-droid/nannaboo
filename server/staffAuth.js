@@ -15,8 +15,9 @@ const memorySessions = new Map(); // id -> { role, name, expiresAt }
 
 export function createMemorySession(name, role, hours) {
   const id = randomUUID();
-  memorySessions.set(id, { role, name, expiresAt: Date.now() + hours * 3_600_000 });
-  return { id, role };
+  const expiresAt = Date.now() + hours * 3_600_000;
+  memorySessions.set(id, { role, name, expiresAt });
+  return { id, role, access_expires_at: new Date(expiresAt).toISOString() };
 }
 
 /** Resolve an active staff session -> { id, role, displayName } or null. */

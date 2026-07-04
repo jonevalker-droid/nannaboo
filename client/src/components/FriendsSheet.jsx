@@ -92,7 +92,9 @@ function SocialConnect() {
 // nested menus), and adding anyone currently in the group.
 export default function FriendsSheet({
   user, peers, myPos, friendState, friendActions,
-  visibility, onChangeVisibility, onClose, onLocate,
+  visibility, onChangeVisibility,
+  rosterConsent, onChangeRosterConsent,
+  onClose, onLocate,
 }) {
   const { friends, sent, received } = friendState;
   const friendIds = new Set(friends.map((f) => f.id));
@@ -137,6 +139,21 @@ export default function FriendsSheet({
             {VISIBILITY_OPTIONS.find((o) => o.value === visibility)?.hint}. Your
             per-friend sharing levels below still apply on top.
           </p>
+          <label className="roster-consent-row">
+            <input
+              type="checkbox"
+              checked={rosterConsent}
+              onChange={(e) => onChangeRosterConsent(e.target.checked)}
+            />
+            <span>
+              <strong>Share my identity with event security</strong>
+              <small>
+                Security staff can see your name with your location when
+                responding — e.g. if you press 🆘 or someone reports you
+                missing. Off by default; your choice, changeable anytime.
+              </small>
+            </span>
+          </label>
         </section>
 
         {received.length > 0 && (

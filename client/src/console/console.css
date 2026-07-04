@@ -1,0 +1,115 @@
+/* Security console — dashboard base styles + console-specific accents. */
+
+.console-theme .dash-nav { border-top: 3px solid #d32f2f; }
+
+.console-wide { grid-column: 1 / -1; }
+
+.console-hours {
+  font-size: 12.5px;
+  color: #52514e;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.console-countdown { background: #fdecea; color: #b71c1c; }
+
+/* incidents */
+
+.console-incident {
+  border: 1px solid #e2e1de;
+  border-radius: 10px;
+  padding: 10px 12px;
+  margin: 8px 0;
+}
+
+.console-incident.is-sos {
+  border-color: #d32f2f;
+  background: #fff8f7;
+}
+
+.console-incident-head {
+  display: flex;
+  gap: 10px;
+  align-items: baseline;
+  flex-wrap: wrap;
+}
+
+.console-incident-note {
+  margin: 6px 0 0;
+  font-size: 13.5px;
+  color: #333;
+}
+
+.console-incident-actions {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  margin-top: 6px;
+  flex-wrap: wrap;
+}
+
+.console-identify { display: inline-flex; gap: 6px; align-items: center; }
+.console-identify select { padding: 4px 8px; font-size: 12.5px; }
+
+.console-subject { font-size: 13px; }
+
+/* roster */
+
+.console-avatar {
+  display: inline-flex;
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  color: white;
+  font-weight: 800;
+  font-size: 13px;
+  align-items: center;
+  justify-content: center;
+}
+
+.console-conf {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-variant-numeric: tabular-nums;
+}
+
+.console-conf .dash-meter { width: 60px; display: inline-block; }
+
+/* modals */
+
+.console-modal-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.45);
+  z-index: 1200;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+}
+
+.console-modal {
+  background: #fcfcfb;
+  border-radius: 14px;
+  padding: 20px;
+  width: 100%;
+  max-width: 420px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.sheet-buttons { display: flex; gap: 8px; justify-content: flex-end; margin-top: 6px; }
+
+.console-log-desc {
+  width: 100%;
+  border: 1px solid #d5d4d0;
+  border-radius: 10px;
+  padding: 10px;
+  font-size: 14px;
+  font-family: inherit;
+  resize: vertical;
+  margin: 6px 0;
+}

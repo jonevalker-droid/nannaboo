@@ -368,8 +368,9 @@ function IncidentsPanel({ staff, code, mapCenter }) {
     }).then(refresh).catch((e) => setErr(e.message));
   };
 
+  const [reason, setReason] = useState('incident_investigation');
   const loadIdentified = () =>
-    api(staff, `/dashboard/incidents/identified?code=${code}`)
+    api(staff, `/dashboard/incidents/identified?code=${code}&reason=${reason}`)
       .then(setIdentified)
       .catch((e) => setIdentified({ denied: true, message: e.message, status: e.status }));
 
@@ -426,8 +427,17 @@ function IncidentsPanel({ staff, code, mapCenter }) {
         <button className="dash-primary" onClick={report}>Report incident</button>
       </div>
 
-      <h3>Identified view <span className="dash-muted">(Security role — every access is audited)</span></h3>
-      {!identified && <button onClick={loadIdentified}>Load identified incidents</button>}
+      <h3>Identified view <span className="dash-muted">(Security role — every access is audited with a reason code)</span></h3>
+      {!identified && (
+        <div className="dash-form-row">
+          <select value={reason} onChange={(e) => setReason(e.target.value)} aria-label="Reason code">
+            {['incident_investigation', 'sos_response', 'medical', 'lost_person',
+              'wellness_check', 'dispatch', 'shift_handover', 'other'].map((r) =>
+              <option key={r} value={r}>{r.replace(/_/g, ' ')}</option>)}
+          </select>
+          <button onClick={loadIdentified}>Load identified incidents</button>
+        </div>
+      )}
       {identified?.denied && (
         <p className="dash-error">
           {identified.status === 403

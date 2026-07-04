@@ -139,9 +139,15 @@ export default function MapView({
   user, peers, pins, friendState, friendActions, wsStatus,
   myPos, geoStatus, geoDetail, onGeoRetry,
   visibility, onChangeVisibility, insideVenue,
+  rosterConsent, onChangeRosterConsent,
+  sosState, onSendSos, onResetSos,
   onAddPin, onRemovePin,
 }) {
   const [placing, setPlacing] = useState(false);
+  const [sosOpen, setSosOpen] = useState(false);
+  const [sosNote, setSosNote] = useState(
+    () => localStorage.getItem('nb_medical_note') ?? ''
+  );
   const [pinLabel, setPinLabel] = useState('');
   const [pendingLL, setPendingLL] = useState(null);
   const [pois, setPois] = useState([]);
@@ -237,6 +243,13 @@ export default function MapView({
           }}
         >
           🚪 Exit
+        </button>
+        <button
+          className="sos-btn"
+          title="Alert event security"
+          onClick={() => { onResetSos(); setSosOpen(true); }}
+        >
+          🆘
         </button>
         <button
           className="friends-btn"
@@ -484,6 +497,8 @@ export default function MapView({
           friendActions={friendActions}
           visibility={visibility}
           onChangeVisibility={onChangeVisibility}
+          rosterConsent={rosterConsent}
+          onChangeRosterConsent={onChangeRosterConsent}
           onClose={() => setShowFriends(false)}
           onLocate={locateFriend}
         />
@@ -496,6 +511,56 @@ export default function MapView({
           myPos={myPos}
           onClose={() => setArTarget(null)}
         />
+      )}
+
+      {/* SOS confirm sheet */}
+      {sosOpen && (
+        <div className="sheet-overlay" onClick={() => setSosOpen(false)}>
+          <div className="sheet sos-sheet" onClick={(e) => e.stopPropagation()}>
+            {sosState !== 'acked' ? (
+              <>
+                <h3>🆘 Alert event security?</h3>
+                <p className="sos-explain">
+                  Security gets your live location right away. Anything you add
+                  below (allergies, medication, what's happening) goes with it.
+                </p>
+                <textarea
+                  value={sosNote}
+                  onChange={(e) => setSosNote(e.target.value)}
+                  placeholder="Optional — medical info or what's wrong"
+                  maxLength={300}
+                  rows={3}
+                />
+                <div className="sheet-buttons">
+                  <button onClick={() => setSosOpen(false)}>Cancel</button>
+                  <button
+                    className="sos-send"
+                    disabled={sosState === 'sending'}
+                    onClick={() => {
+                      localStorage.setItem('nb_medical_note', sosNote);
+                      onSendSos(sosNote.trim());
+                    }}
+                  >
+                    {sosState === 'sending' ? 'Sending…' : 'Send SOS'}
+                  </button>
+                </div>
+              </>
+            ) : (
+              <>
+                <h3>✅ Security has been alerted</h3>
+                <p className="sos-explain">
+                  Your location {sosNote.trim() ? 'and your note ' : ''}went to
+                  the security team. Stay where you are if you safely can.
+                </p>
+                <div className="sheet-buttons">
+                  <button className="primary" onClick={() => setSosOpen(false)}>
+                    OK
+                  </button>
+                </div>
+              </>
+            )}
+          </div>
+        </div>
       )}
 
       {/* Label prompt sheet */}

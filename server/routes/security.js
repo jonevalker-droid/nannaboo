@@ -43,7 +43,10 @@ export default function createSecurityRouter({ getLiveGroup }) {
     const role = staffAuth.STAFF_ROLES.includes(req.body?.role)
       ? req.body.role : 'security';
     const name = String(req.body?.name ?? 'Field test').slice(0, 60);
-    const hours = Math.min(24, Math.max(1, Number(req.body?.hours) || 8));
+    // Fractional hours are legal so a session can end exactly at shift end
+    // (e.g. 0.5 = 30 min). Expiry is enforced on every request in
+    // staffAuth/access.js — nothing outlives access_expires_at.
+    const hours = Math.min(24, Math.max(0.001, Number(req.body?.hours) || 8));
     if (db.enabled) {
       const { rows } = await db.getPool().query(
         `INSERT INTO staff_session (venue_id, display_name, role, access_expires_at)

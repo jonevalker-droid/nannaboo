@@ -17,7 +17,7 @@ import * as geofence from './geofence.js';
 const RECENT_MIN = 15;          // "currently on site" = a fix in the last 15 min
 const GRID = 0.00025;           // heatmap cell ≈ 25-30 m
 export const INCIDENT_CATEGORIES = [
-  'medical', 'altercation', 'lost_person', 'theft', 'overcrowding', 'other',
+  'sos', 'medical', 'altercation', 'lost_person', 'theft', 'overcrowding', 'other',
 ];
 const INCIDENT_STATUSES = ['open', 'acknowledged', 'resolved'];
 
@@ -247,6 +247,88 @@ export async function incidentSummary({ eventId, eventKey }) {
       lat: i.lat, lng: i.lng, has_subject: !!i.subjectGuestId,
     })),
   };
+}
+
+/**
+ * Console inbox: identity-free rows (has_subject flag only — identity is a
+ * separate audited call), SOS pinned first, then open incidents, newest
+ * first. description IS included: a guest's SOS note is information they
+ * sent to security on purpose.
+ */
+export async function consoleInbox({ eventId, eventKey }) {
+  if (db.enabled && eventId) {
+    const { rows } = await db.getPool().query(
+      `SELECT id, category, status, description, created_at,
+              assigned_staff_id, assigned_at,
+              ST_Y(location::geometry) AS lat, ST_X(location::geometry) AS lng,
+              (subject_guest_id IS NOT NULL) AS has_subject
+       FROM incident_log
+       WHERE event_id = $1
+       ORDER BY (category = 'sos' AND status <> 'resolved') DESC,
+                (status = 'open') DESC,
+                created_at DESC
+       LIMIT 50`,
+      [eventId]
+    );
+    return rows;
+  }
+  const score = (i) =>
+    (i.category === 'sos' && i.status !== 'resolved' ? 2 : 0) +
+    (i.status === 'open' ? 1 : 0);
+  return memoryIncidents.filter((i) => i.eventKey === eventKey)
+    .sort((a, b) => score(b) - score(a) || b.createdAt - a.createdAt)
+    .slice(0, 50)
+    .map((i) => ({
+      id: i.id, category: i.category, status: i.status,
+      description: i.description,
+      created_at: new Date(i.createdAt).toISOString(),
+      assigned_staff_id: i.assignedStaffId ?? null,
+      assigned_at: i.assignedAt ? new Date(i.assignedAt).toISOString() : null,
+      lat: i.lat, lng: i.lng, has_subject: !!i.subjectGuestId,
+    }));
+}
+
+/** Location + assignment info for one incident (no subject identity). */
+export async function getIncident(id, { eventId, eventKey }) {
+  if (db.enabled && eventId) {
+    const { rows } = await db.getPool().query(
+      `SELECT id, category, status, assigned_staff_id,
+              ST_Y(location::geometry) AS lat, ST_X(location::geometry) AS lng
+       FROM incident_log WHERE id = $1 AND event_id = $2`,
+      [id, eventId]
+    );
+    return rows[0] ?? null;
+  }
+  const i = memoryIncidents.find((x) => x.id === id && x.eventKey === eventKey);
+  return i ? {
+    id: i.id, category: i.category, status: i.status,
+    assigned_staff_id: i.assignedStaffId ?? null, lat: i.lat, lng: i.lng,
+  } : null;
+}
+
+/** Memory-mode subject id for one incident (DB mode resolves in access.js). */
+export function memoryIncidentSubject(id, eventKey) {
+  return memoryIncidents.find((x) => x.id === id && x.eventKey === eventKey)
+    ?.subjectGuestId ?? null;
+}
+
+export async function assignIncident(id, staffSessionId) {
+  if (db.enabled) {
+    const { rowCount } = await db.getPool().query(
+      `UPDATE incident_log
+       SET assigned_staff_id = $2, assigned_at = now(),
+           status = CASE WHEN status = 'open' THEN 'acknowledged' ELSE status END
+       WHERE id = $1`,
+      [id, staffSessionId]
+    );
+    return rowCount > 0;
+  }
+  const i = memoryIncidents.find((x) => x.id === id);
+  if (!i) return false;
+  i.assignedStaffId = staffSessionId;
+  i.assignedAt = Date.now();
+  if (i.status === 'open') i.status = 'acknowledged';
+  return true;
 }
 
 /** In-memory identified incidents (Security role enforced by the router). */
