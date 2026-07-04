@@ -38,12 +38,13 @@ export default function NearestExits({ onContinue }) {
   }, []);
 
   // Start the countdown once exits render; skip the screen if there are none.
+  // onContinue receives the fetched exits so the app can flash them in AR.
   useEffect(() => {
     if (exits === null) return;
-    if (exits.length === 0) { onContinue(); return; }
+    if (exits.length === 0) { onContinue([]); return; }
     const t = setInterval(() => {
       setSecondsLeft((s) => {
-        if (s <= 1) { clearInterval(t); onContinue(); return 0; }
+        if (s <= 1) { clearInterval(t); onContinue(exits); return 0; }
         return s - 1;
       });
     }, 1000);
@@ -87,7 +88,7 @@ export default function NearestExits({ onContinue }) {
         ))}
       </ul>
 
-      <button className="exits-continue" onClick={onContinue}>
+      <button className="exits-continue" onClick={() => onContinue(exits)}>
         Got it — find my people →
       </button>
       <p className="exits-countdown">Continuing in {secondsLeft}s</p>

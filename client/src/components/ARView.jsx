@@ -1,11 +1,66 @@
 import { useEffect, useRef, useState } from 'react';
 import { haversineMeters, bearingDeg, formatDistance, cardinal } from '../lib/geo';
 
-// Lightweight AR: rear camera feed + an arrow rotated to (bearing to target −
+// Lightweight AR: rear camera feed + arrows rotated to (bearing to target −
 // device compass heading). No computer vision — just GPS bearing math and the
 // orientation sensor. Degrades to a compass card if camera or sensors are
 // unavailable (both require HTTPS, which Render provides).
-export default function ARView({ target, myPos, onClose }) {
+//
+// Two modes:
+//   single (default) — the original one-big-arrow view for a POI or one friend
+//   multi            — several live targets at once (all friends / entry exits):
+//                      each gets its own small arrow + label, placed across the
+//                      screen by relative bearing, stacked when bearings crowd
+//
+// `auto` marks the one-time entry flash: tap anywhere skips, and the iOS
+// motion-permission request is NOT attempted (it needs a user gesture, which
+// an automatic open doesn't have) — the cardinal-direction fallback shows
+// instead.
+
+// Map a signed relative bearing (deg, 0 = straight ahead) to a horizontal
+// screen position. ±60° spans the visible band; anything wider clamps to an
+// edge so targets behind you still show which way to turn.
+function relToX(rel) {
+  return Math.max(6, Math.min(94, 50 + (rel / 60) * 45));
+}
+
+// Assign stack rows so labels at similar bearings don't overlap: sorted by x,
+// any marker within 18% of the previous one drops a row below it.
+function placeMarkers(markers) {
+  const sorted = [...markers].sort((a, b) => a.x - b.x);
+  let prevX = -100;
+  let prevRow = 0;
+  return sorted.map((m) => {
+    const row = m.x - prevX < 18 ? prevRow + 1 : 0;
+    prevX = m.x;
+    prevRow = row;
+    return { ...m, row };
+  });
+}
+
+function ArrowSvg({ size = 110 }) {
+  return (
+    <svg viewBox="0 0 100 100" width={size} height={size}>
+      <path
+        d="M50 6 L78 62 L50 48 L22 62 Z"
+        fill="currentColor"
+        stroke="rgba(0,0,0,.35)"
+        strokeWidth="3"
+        strokeLinejoin="round"
+      />
+    </svg>
+  );
+}
+
+export default function ARView({
+  target, myPos, onClose,
+  mode = 'single',
+  targets = [],
+  modeLabel = null,        // header pill naming the multi mode ("👥 All friends")
+  auto = false,            // entry flash: tap-anywhere skip, no motion-perm prompt
+  autoSecondsLeft = null,  // countdown shown in the skip hint
+  onToggleAllFriends = null, // single-friend view → switch to all-friends mode
+}) {
   const videoRef = useRef(null);
   const [camError, setCamError] = useState(false);
   const [heading, setHeading] = useState(null);
@@ -45,8 +100,11 @@ export default function ARView({ target, myPos, onClose }) {
 
     if (typeof DeviceOrientationEvent !== 'undefined' &&
         typeof DeviceOrientationEvent.requestPermission === 'function') {
-      // iOS 13+: must be granted via user gesture; opening AR was a tap, but
-      // if the promise rejects we show an explicit enable button.
+      // iOS 13+: must be granted via user gesture. Opening AR manually was a
+      // tap; the automatic entry flash was not, so don't even ask there —
+      // rejecting would surface an enable button nobody can meaningfully use
+      // in a 4-second window. Cardinal-direction fallback covers it.
+      if (auto) return () => window.removeEventListener(eventName, onOrientation, true);
       DeviceOrientationEvent.requestPermission()
         .then((res) => (res === 'granted' ? start() : setNeedsMotionPerm(true)))
         .catch(() => setNeedsMotionPerm(true));
@@ -54,7 +112,7 @@ export default function ARView({ target, myPos, onClose }) {
       start();
     }
     return () => window.removeEventListener(eventName, onOrientation, true);
-  }, []);
+  }, [auto]);
 
   const enableCompass = () => {
     DeviceOrientationEvent.requestPermission()
@@ -69,65 +127,166 @@ export default function ARView({ target, myPos, onClose }) {
       .catch(() => {});
   };
 
-  const dist = myPos ? haversineMeters(myPos, target) : null;
-  const bearing = myPos ? bearingDeg(myPos, target) : null;
+  // ── Multi-target geometry (recomputed every render: positions are live) ──
+  const liveTargets = mode === 'multi'
+    ? targets.filter((t) => t.lat != null && t.lng != null)
+    : [];
+  const multiMarkers = mode === 'multi' && myPos
+    ? liveTargets.map((t) => {
+        const bearing = bearingDeg(myPos, t);
+        const dist = haversineMeters(myPos, t);
+        let rel = null;
+        if (heading != null) {
+          rel = (bearing - heading + 360) % 360;
+          if (rel > 180) rel -= 360;
+        }
+        return {
+          id: t.id ?? t.name, name: t.name, bearing, dist, rel,
+          x: rel != null ? relToX(rel) : null,
+        };
+      })
+    : [];
+  const placed = heading != null ? placeMarkers(multiMarkers) : [];
+
+  // ── Single-target math (unchanged from the original view) ──
+  const dist = target && myPos ? haversineMeters(myPos, target) : null;
+  const bearing = target && myPos ? bearingDeg(myPos, target) : null;
   const relative = bearing != null && heading != null
     ? (bearing - heading + 360) % 360
     : null;
   const onTarget = relative != null && (relative < 20 || relative > 340);
 
   return (
-    <div className="ar-screen">
+    <div
+      className={`ar-screen ${mode === 'multi' ? 'ar-multi' : ''}`}
+      onClick={auto ? onClose : undefined}
+    >
       {!camError && (
         <video ref={videoRef} className="ar-video" autoPlay playsInline muted />
       )}
 
       <div className="ar-top">
         <div className="ar-target">
-          <strong>{target.name}</strong>
-          <span>
-            {dist != null ? formatDistance(dist) : 'waiting for GPS…'}
-            {bearing != null && ` · ${cardinal(bearing)}`}
-          </span>
+          {mode === 'multi' ? (
+            <>
+              <span className="ar-mode-pill">{modeLabel ?? '👥 All friends'}</span>
+              <span>
+                {!myPos ? 'waiting for GPS…'
+                  : liveTargets.length === 0 ? 'nobody sharing right now'
+                  : `${liveTargets.length} ${liveTargets.length === 1 ? 'target' : 'targets'} · live`}
+              </span>
+            </>
+          ) : (
+            <>
+              <strong>{target.name}</strong>
+              <span>
+                {dist != null ? formatDistance(dist) : 'waiting for GPS…'}
+                {bearing != null && ` · ${cardinal(bearing)}`}
+              </span>
+            </>
+          )}
         </div>
         <button className="ar-close" onClick={onClose} aria-label="Close AR view">✕</button>
       </div>
 
-      <div className="ar-center">
-        {relative != null ? (
-          <>
-            <div
-              className={`ar-arrow ${onTarget ? 'on-target' : ''}`}
-              style={{ transform: `rotate(${relative}deg)` }}
-            >
-              <svg viewBox="0 0 100 100" width="110" height="110">
-                <path
-                  d="M50 6 L78 62 L50 48 L22 62 Z"
-                  fill="currentColor"
-                  stroke="rgba(0,0,0,.35)"
-                  strokeWidth="3"
-                  strokeLinejoin="round"
-                />
-              </svg>
+      {mode === 'multi' ? (
+        <>
+          {heading != null && myPos != null ? (
+            placed.map((m) => (
+              <div
+                key={m.id}
+                className="ar-marker"
+                style={{ left: `${m.x}%`, top: `calc(26% + ${m.row * 88}px)` }}
+              >
+                <div
+                  className={`ar-arrow ar-marker-arrow ${Math.abs(m.rel) < 20 ? 'on-target' : ''}`}
+                  style={{ transform: `rotate(${m.rel}deg)` }}
+                >
+                  <ArrowSvg size={54} />
+                </div>
+                <div className="ar-marker-label">
+                  <strong>{m.name}</strong>
+                  <span>{formatDistance(m.dist)}</span>
+                </div>
+              </div>
+            ))
+          ) : (
+            <div className="ar-center">
+              <div className="ar-fallback ar-multi-fallback">
+                {needsMotionPerm && !auto && (
+                  <button className="ar-enable" onClick={enableCompass}>
+                    Enable compass
+                  </button>
+                )}
+                {!myPos ? (
+                  <p>Waiting for GPS fix…</p>
+                ) : liveTargets.length === 0 ? (
+                  <p>Nobody here is sharing a live position right now</p>
+                ) : (
+                  <ul className="ar-multi-list">
+                    {multiMarkers.map((m) => (
+                      <li key={m.id}>
+                        <strong>{m.name}</strong>
+                        {' '}— {formatDistance(m.dist)} · head <strong>{cardinal(m.bearing)}</strong>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </div>
             </div>
-            <p className="ar-hint">
-              {onTarget ? 'Straight ahead!' : 'Turn until the arrow points up'}
-            </p>
-          </>
-        ) : (
-          <div className="ar-fallback">
-            {needsMotionPerm ? (
-              <button className="ar-enable" onClick={enableCompass}>
-                Enable compass
-              </button>
-            ) : bearing != null ? (
-              <p>Compass unavailable — head <strong>{cardinal(bearing)}</strong></p>
-            ) : (
-              <p>Waiting for GPS fix…</p>
-            )}
-          </div>
-        )}
-      </div>
+          )}
+          {heading != null && myPos != null && liveTargets.length === 0 && (
+            <div className="ar-center">
+              <div className="ar-fallback">
+                <p>Nobody here is sharing a live position right now</p>
+              </div>
+            </div>
+          )}
+        </>
+      ) : (
+        <div className="ar-center">
+          {relative != null ? (
+            <>
+              <div
+                className={`ar-arrow ${onTarget ? 'on-target' : ''}`}
+                style={{ transform: `rotate(${relative}deg)` }}
+              >
+                <ArrowSvg />
+              </div>
+              <p className="ar-hint">
+                {onTarget ? 'Straight ahead!' : 'Turn until the arrow points up'}
+              </p>
+            </>
+          ) : (
+            <div className="ar-fallback">
+              {needsMotionPerm ? (
+                <button className="ar-enable" onClick={enableCompass}>
+                  Enable compass
+                </button>
+              ) : bearing != null ? (
+                <p>Compass unavailable — head <strong>{cardinal(bearing)}</strong></p>
+              ) : (
+                <p>Waiting for GPS fix…</p>
+              )}
+            </div>
+          )}
+        </div>
+      )}
+
+      {onToggleAllFriends && mode === 'single' && (
+        <button
+          className="ar-toggle-all"
+          onClick={(e) => { e.stopPropagation(); onToggleAllFriends(); }}
+        >
+          👥 Show all friends
+        </button>
+      )}
+
+      {auto && (
+        <div className="ar-skip">
+          Tap anywhere to skip{autoSecondsLeft != null ? ` · continuing in ${autoSecondsLeft}s` : ''}
+        </div>
+      )}
 
       {camError && <div className="ar-nocam">Camera unavailable — compass mode</div>}
     </div>

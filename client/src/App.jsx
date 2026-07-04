@@ -3,6 +3,7 @@ import JoinForm from './components/JoinForm';
 import Onboarding from './components/Onboarding';
 import NearestExits from './components/NearestExits';
 import MapView from './components/MapView';
+import ARView from './components/ARView';
 import './App.css';
 
 const VISIBILITY_VALUES = ['public', 'friends_only', 'off'];
@@ -24,6 +25,8 @@ const WS_URL =
 const geoLog = (...args) => console.log('[geo]', ...args);
 const GEO_ERR = { 1: 'PERMISSION_DENIED', 2: 'POSITION_UNAVAILABLE', 3: 'TIMEOUT' };
 
+const ENTRY_AR_SECONDS = 4; // one-time entry AR flash duration (spec: 3-5s)
+
 export default function App() {
   const [phase, setPhase] = useState('join');
   const [user, setUser] = useState(null);
@@ -41,6 +44,8 @@ export default function App() {
   const [myPos, setMyPos] = useState(null);
   const [geoStatus, setGeoStatus] = useState('locating'); // locating | ok | denied | unavailable
   const [geoDetail, setGeoDetail] = useState(null); // last error message, shown in the banner
+  const [entryExits, setEntryExits] = useState([]); // targets for the one-time entry AR flash
+  const [entryCountdown, setEntryCountdown] = useState(ENTRY_AR_SECONDS);
 
   const wsRef = useRef(null);
   const userRef = useRef(null);
@@ -256,7 +261,55 @@ export default function App() {
     }
   }, [connect, startGeoWatch]);
 
-  const handleExitsSeen = useCallback(() => setPhase('map'), []);
+  // One-time entry AR flash: right after the exits screen, briefly open the
+  // AR view pointed at the nearest exits — then continue to the map exactly
+  // as before. Fires ONLY here, and only when it can open silently: a real
+  // GPS fix already in hand AND camera permission already granted. The
+  // Permissions API is used solely to avoid springing a camera prompt on an
+  // automatic open (per the geo invariant it is never trusted as app state) —
+  // any uncertainty (query unsupported, slow, state 'prompt'/'denied') skips
+  // the flash and goes straight to the map. Manual AR is unaffected.
+  const handleExitsSeen = useCallback((exits) => {
+    const candidates = (Array.isArray(exits) ? exits : [])
+      .filter((e) => e.lat != null && e.lng != null)
+      .slice(0, 3);
+    if (candidates.length === 0 || geoStatusRef.current !== 'ok') {
+      geoLog('entry-AR skipped (no exits or no GPS fix yet)');
+      setPhase('map');
+      return;
+    }
+    let settled = false;
+    const decide = (flash, why) => {
+      if (settled) return;
+      settled = true;
+      geoLog(`entry-AR ${flash ? 'opening' : 'skipped'} (${why})`);
+      if (flash) {
+        setEntryExits(candidates);
+        setEntryCountdown(ENTRY_AR_SECONDS);
+        setPhase('entryAR');
+      } else {
+        setPhase('map');
+      }
+    };
+    try {
+      navigator.permissions.query({ name: 'camera' })
+        .then((st) => decide(st.state === 'granted', `camera permission '${st.state}'`))
+        .catch(() => decide(false, 'camera permission query rejected'));
+      // Never hold up entry on a slow Permissions API.
+      setTimeout(() => decide(false, 'permission query timeout'), 1500);
+    } catch {
+      decide(false, 'Permissions API unavailable');
+    }
+  }, []);
+
+  // Auto-close the entry flash; tap/skip closes it early via onClose.
+  useEffect(() => {
+    if (phase !== 'entryAR') return;
+    const tick = setInterval(
+      () => setEntryCountdown((s) => Math.max(0, s - 1)), 1000);
+    const done = setTimeout(() => setPhase('map'), ENTRY_AR_SECONDS * 1000);
+    return () => { clearInterval(tick); clearTimeout(done); };
+  }, [phase]);
 
   const addPin = useCallback((label, lat, lng) => {
     const ws = wsRef.current;
@@ -362,6 +415,20 @@ export default function App() {
 
   if (phase === 'exits') {
     return <NearestExits onContinue={handleExitsSeen} />;
+  }
+
+  if (phase === 'entryAR') {
+    return (
+      <ARView
+        mode="multi"
+        targets={entryExits}
+        modeLabel="🚪 Nearest exits"
+        auto
+        autoSecondsLeft={entryCountdown}
+        myPos={myPos}
+        onClose={() => setPhase('map')}
+      />
+    );
   }
 
   return (

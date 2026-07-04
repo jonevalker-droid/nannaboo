@@ -165,7 +165,7 @@ export default function FriendsSheet({
   visibility, onChangeVisibility,
   rosterConsent, onChangeRosterConsent,
   medicalResult, onSaveMedical,
-  onClose, onLocate,
+  onClose, onLocate, onLocateAll,
 }) {
   const { friends, sent, received } = friendState;
   const friendIds = new Set(friends.map((f) => f.id));
@@ -265,6 +265,11 @@ export default function FriendsSheet({
 
         <section>
           <h4>My friends</h4>
+          {onLocateAll && (
+            <button className="mini-btn ar-all-btn" onClick={onLocateAll}>
+              📷 See all friends in AR
+            </button>
+          )}
           {friends.length === 0 && (
             <p className="friends-empty">No friends yet — add someone from your group below.</p>
           )}

@@ -154,6 +154,7 @@ export default function MapView({
   const [pois, setPois] = useState([]);
   const [poiFilter, setPoiFilter] = useState('all');
   const [arTarget, setArTarget] = useState(null);
+  const [friendsAr, setFriendsAr] = useState(false); // all-friends multi-target AR
   const [showFriends, setShowFriends] = useState(false);
 
   const friendById = new Map(friendState.friends.map((f) => [f.id, f]));
@@ -168,6 +169,13 @@ export default function MapView({
     return p && p.lat != null ? { ...arTarget, lat: p.lat, lng: p.lng } : null;
   };
   const liveArTarget = resolveArTarget();
+
+  // All-friends AR targets: every friend the server currently shows me a
+  // position for. Visibility/sharing is decided entirely server-side (per-
+  // viewer groupState) — friendship membership is the only client criterion,
+  // same as the map's Friends filter. Recomputed each render, so arrows and
+  // distances track live position updates for free.
+  const arFriends = peers.filter((p) => friendById.has(p.id) && p.lat != null);
 
   const locateFriend = (peerId) => {
     const p = peers.find((pp) => pp.id === peerId);
@@ -504,15 +512,31 @@ export default function MapView({
           onSaveMedical={onSaveMedical}
           onClose={() => setShowFriends(false)}
           onLocate={locateFriend}
+          onLocateAll={arFriends.length > 0
+            ? () => { setArTarget(null); setFriendsAr(true); setShowFriends(false); }
+            : null}
         />
       )}
 
-      {/* AR camera view (POIs use a fixed target; friends track live) */}
-      {liveArTarget && (
+      {/* AR camera view. Two distinct modes: the original single-target view
+          (POIs use a fixed target; a friend tracks live) and the all-friends
+          multi-target view — mutually exclusive, labeled in the AR header. */}
+      {friendsAr ? (
+        <ARView
+          mode="multi"
+          targets={arFriends}
+          modeLabel="👥 All friends"
+          myPos={myPos}
+          onClose={() => setFriendsAr(false)}
+        />
+      ) : liveArTarget && (
         <ARView
           target={liveArTarget}
           myPos={myPos}
           onClose={() => setArTarget(null)}
+          onToggleAllFriends={arTarget?.peerId && arFriends.length > 1
+            ? () => { setArTarget(null); setFriendsAr(true); }
+            : null}
         />
       )}
 
