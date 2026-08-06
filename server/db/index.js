@@ -11,8 +11,18 @@ const POSITION_WRITE_INTERVAL_MS = 10_000; // cap position_fix inserts per guest
 
 let pool = null;
 let defaultVenueId = null;
-const eventIdByCode = new Map();     // upper(groupCode) -> event uuid
+const eventIdByCode = new Map();     // upper(groupCode) -> { id, expiresAt }
 const lastPositionWrite = new Map(); // guestId -> ms timestamp
+
+// Per-event visibility window (Valker reunion setup): an event stays active
+// for windowHours from starts_at, then closes and the next join opens a fresh
+// one — which is what resets this_event_only friend visibility. Presets give
+// specific passcodes a real name and a longer window; everything else gets
+// the daily-style default.
+const DEFAULT_EVENT_WINDOW_HOURS = 24;
+const EVENT_PRESETS = {
+  VALK2026: { name: 'Valker Family Reunion', windowHours: 72 },
+};
 
 export let enabled = false;
 
@@ -60,31 +70,47 @@ export function getDefaultVenueId() {
   return defaultVenueId;
 }
 
-// One active event per group code, created lazily on first join.
+// One active event per group code, created lazily on first join. An active
+// event whose visibility window has lapsed is closed here (ends_at = now())
+// and replaced with a fresh one, so the cache carries the window expiry too.
+const eventWindowMs = (row, fallbackHours) =>
+  new Date(row.starts_at).getTime()
+    + (row.visibility_window_hours ?? fallbackHours) * 3600_000;
+
 export async function ensureEventForGroup(groupCode) {
   if (!enabled) return null;
   const code = groupCode.toUpperCase();
-  if (eventIdByCode.has(code)) return eventIdByCode.get(code);
+  const cached = eventIdByCode.get(code);
+  if (cached && Date.now() < cached.expiresAt) return cached.id;
+  const preset = EVENT_PRESETS[code];
+  const windowHours = preset?.windowHours ?? DEFAULT_EVENT_WINDOW_HOURS;
   try {
-    let { rows } = await pool.query(
-      'SELECT id FROM event WHERE upper(group_code) = $1 AND ends_at IS NULL', [code]
+    const active = () => pool.query(
+      `SELECT id, starts_at, visibility_window_hours FROM event
+       WHERE upper(group_code) = $1 AND ends_at IS NULL`, [code]
     );
+    let { rows } = await active();
+    if (rows.length && Date.now() >= eventWindowMs(rows[0], windowHours)) {
+      await pool.query('UPDATE event SET ends_at = now() WHERE id = $1', [rows[0].id]);
+      console.log(`[db] event window over for ${code} — starting a fresh event`);
+      rows = [];
+    }
     if (!rows.length) {
       ({ rows } = await pool.query(
-        `INSERT INTO event (venue_id, name, group_code, starts_at)
-         VALUES ($1, $2, $2, now())
+        `INSERT INTO event (venue_id, name, group_code, starts_at, visibility_window_hours)
+         VALUES ($1, $2, $3, now(), $4)
          ON CONFLICT DO NOTHING
-         RETURNING id`,
-        [defaultVenueId, code]
+         RETURNING id, starts_at, visibility_window_hours`,
+        [defaultVenueId, preset?.name ?? code, code, windowHours]
       ));
-      if (!rows.length) { // lost a concurrent insert race — re-read
-        ({ rows } = await pool.query(
-          'SELECT id FROM event WHERE upper(group_code) = $1 AND ends_at IS NULL', [code]
-        ));
-      }
+      if (!rows.length) ({ rows } = await active()); // lost a concurrent insert race — re-read
     }
-    if (rows.length) eventIdByCode.set(code, rows[0].id);
-    return rows[0]?.id ?? null;
+    if (!rows.length) return null;
+    eventIdByCode.set(code, {
+      id: rows[0].id,
+      expiresAt: eventWindowMs(rows[0], windowHours),
+    });
+    return rows[0].id;
   } catch (err) {
     logError('ensureEventForGroup', err);
     return null;

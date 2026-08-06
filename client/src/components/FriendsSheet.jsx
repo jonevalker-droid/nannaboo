@@ -1,6 +1,18 @@
 import { useEffect, useState } from 'react';
-import { haversineMeters, bearingDeg, formatDistance, cardinal } from '../lib/geo';
+import { haversineMeters, bearingDeg, formatDistance, cardinal, minutesAgo, STALE_MS } from '../lib/geo';
+import { colorFor } from '../lib/avatar';
 import { VISIBILITY_OPTIONS } from './JoinForm';
+import PhotoPicker from './PhotoPicker';
+
+// Small round face for list rows: photo when the guest shared one, colored
+// initial otherwise — same fallback colors as the map markers.
+function Avatar({ id, name, photo }) {
+  return (
+    <span className="friend-avatar" style={{ background: colorFor(id) }} aria-hidden="true">
+      {photo ? <img src={photo} alt="" /> : (name?.[0] ?? '?').toUpperCase()}
+    </span>
+  );
+}
 
 // Privacy & Safety settings (Prompt 7): the same choices made at onboarding,
 // reviewable/changeable anytime — visibility, security identity sharing,
@@ -162,6 +174,7 @@ function SocialConnect() {
 // nested menus), and adding anyone currently in the group.
 export default function FriendsSheet({
   user, peers, myPos, friendState, friendActions,
+  photos, myPhoto, onChangePhoto, dingSent,
   visibility, onChangeVisibility,
   rosterConsent, onChangeRosterConsent,
   medicalResult, onSaveMedical,
@@ -176,10 +189,23 @@ export default function FriendsSheet({
   const addable = peers.filter((p) => !friendIds.has(p.id) && !pendingIds.has(p.id));
   const peerById = new Map(peers.map((p) => [p.id, p]));
 
+  // Tick so "last seen X min ago" lines age while the sheet stays open.
+  const [now, setNow] = useState(Date.now());
+  useEffect(() => {
+    const t = setInterval(() => setNow(Date.now()), 15_000);
+    return () => clearInterval(t);
+  }, []);
+
   const distanceLine = (guestId) => {
     const p = peerById.get(guestId);
-    if (!p || p.lat == null || !myPos) return null;
-    return `${formatDistance(haversineMeters(myPos, p))} · ${cardinal(bearingDeg(myPos, p))}`;
+    if (!p || p.lat == null) return null;
+    const dist = myPos
+      ? `${formatDistance(haversineMeters(myPos, p))} away · ${cardinal(bearingDeg(myPos, p))}`
+      : null;
+    if (p.lastSeen != null && now - p.lastSeen > STALE_MS) {
+      return `last seen ${minutesAgo(p.lastSeen, now)} min ago${dist ? ` · was ${dist}` : ''}`;
+    }
+    return dist;
   };
 
   return (
@@ -275,6 +301,7 @@ export default function FriendsSheet({
           )}
           {friends.map((f) => (
             <div key={f.id} className="friend-row">
+              <Avatar id={f.id} name={f.name} photo={photos?.[f.id]} />
               <span className="friend-name">
                 ⭐ {f.name}
                 <small>
@@ -284,6 +311,13 @@ export default function FriendsSheet({
                 </small>
               </span>
               <span className="friend-row-actions">
+                <button
+                  className={`mini-btn ding-btn ${dingSent?.[f.id] ? 'sent' : ''}`}
+                  title={`Send ${f.name} a ding: "People are looking for you — open the app and share your location."`}
+                  onClick={() => friendActions.ding(f.id)}
+                >
+                  {dingSent?.[f.id] ? '✓' : '🔔'}
+                </button>
                 {f.visibleToMe && peerById.get(f.id)?.lat != null && (
                   <button
                     className="mini-btn"
@@ -308,9 +342,21 @@ export default function FriendsSheet({
           ))}
           {friends.length > 0 && (
             <p className="friends-hint">
-              The dropdown is what <strong>{user.name}</strong> shares with them — they control what you see.
+              The dropdown is what <strong>{user.name}</strong> shares with
+              them — they control what you see. 🔔 sends a "someone's looking
+              for you" ding to their app.
             </p>
           )}
+        </section>
+
+        <section>
+          <h4>Your photo</h4>
+          <PhotoPicker photo={myPhoto} name={user.name} onChange={onChangePhoto} />
+          <p className="friends-hint">
+            Helps your group tell same-initial people apart (two "J"s look
+            identical without one). Stays on this phone and is shown live to
+            your group only — never saved on the server.
+          </p>
         </section>
 
         <section>
@@ -320,6 +366,7 @@ export default function FriendsSheet({
           )}
           {addable.map((p) => (
             <div key={p.id} className="friend-row">
+              <Avatar id={p.id} name={p.name} photo={photos?.[p.id]} />
               <span className="friend-name">{p.name}</span>
               <button className="mini-btn add" onClick={() => friendActions.request(p.id)}>
                 + Add friend

@@ -27,6 +27,10 @@ const GEO_ERR = { 1: 'PERMISSION_DENIED', 2: 'POSITION_UNAVAILABLE', 3: 'TIMEOUT
 
 const ENTRY_AR_SECONDS = 4; // one-time entry AR flash duration (spec: 3-5s)
 
+// "Someone's looking for you" ding — spec copy, used verbatim for the OS
+// notification; the in-app banner adds who it's from.
+const DING_COPY = 'People are looking for you — open the app and share your location.';
+
 export default function App() {
   const [phase, setPhase] = useState('join');
   const [user, setUser] = useState(null);
@@ -42,6 +46,10 @@ export default function App() {
   const [sosState, setSosState] = useState('idle'); // idle | sending | acked
   const [medicalResult, setMedicalResult] = useState(null); // last setMedicalInfo ack
   const [myPos, setMyPos] = useState(null);
+  const [photos, setPhotos] = useState({}); // peerId -> data URL (server relay)
+  const [myPhoto, setMyPhotoState] = useState(() => localStorage.getItem('nb_photo'));
+  const [ding, setDing] = useState(null); // latest incoming ding, for the banner
+  const [dingSent, setDingSent] = useState({}); // toGuestId -> ts (row feedback)
   const [geoStatus, setGeoStatus] = useState('locating'); // locating | ok | denied | unavailable
   const [geoDetail, setGeoDetail] = useState(null); // last error message, shown in the banner
   const [entryExits, setEntryExits] = useState([]); // targets for the one-time entry AR flash
@@ -75,6 +83,12 @@ export default function App() {
       if (localStorage.getItem('nb_roster_consent') === '1') {
         ws.send(JSON.stringify({ type: 'setRosterConsent', grant: true }));
       }
+      // Photo lives on-device; re-sent each (re)connect so the in-memory
+      // relay survives server restarts, like roster consent above.
+      const storedPhoto = localStorage.getItem('nb_photo');
+      if (storedPhoto) {
+        ws.send(JSON.stringify({ type: 'setPhoto', photo: storedPhoto }));
+      }
     };
 
     ws.onmessage = (e) => {
@@ -88,6 +102,27 @@ export default function App() {
       }
       if (msg.type === 'friendState') {
         setFriendState({ friends: msg.friends, sent: msg.sent, received: msg.received });
+      }
+      if (msg.type === 'photoState') setPhotos(msg.photos ?? {});
+      if (msg.type === 'dingSent') {
+        setDingSent((m) => ({ ...m, [msg.toGuestId]: msg.at }));
+      }
+      if (msg.type === 'ding') {
+        setDing({ fromName: msg.fromName, at: msg.at });
+        navigator.vibrate?.([200, 100, 200]);
+        // OS-level notification only if the tab is hidden and permission was
+        // already granted — the in-app banner covers the foreground case.
+        if (document.hidden
+            && typeof Notification !== 'undefined'
+            && Notification.permission === 'granted') {
+          navigator.serviceWorker?.ready
+            .then((reg) => reg.showNotification('NannaBoo', {
+              body: DING_COPY,
+              tag: 'nb-ding',
+              icon: '/icon.svg',
+            }))
+            .catch(() => {});
+        }
       }
       if (msg.type === 'sosAck') setSosState('acked');
       if (msg.type === 'medicalInfo') {
@@ -316,6 +351,9 @@ export default function App() {
     if (!ws || ws.readyState !== WebSocket.OPEN || !userRef.current) return;
     ws.send(JSON.stringify({
       type: 'addPin',
+      // Client-generated id makes the drop idempotent server-side — a
+      // double-fired handler can't create twin overlapping pins.
+      pinId: crypto.randomUUID(),
       guestId: userRef.current.id,
       groupCode: userRef.current.groupCode,
       label, lat, lng,
@@ -338,7 +376,31 @@ export default function App() {
     request: (toGuestId) => sendFriendMsg({ type: 'friendRequest', toGuestId }),
     respond: (requestId, accept) => sendFriendMsg({ type: 'friendRespond', requestId, accept }),
     setLevel: (friendGuestId, level) => sendFriendMsg({ type: 'friendLevel', friendGuestId, level }),
+    ding: (toGuestId) => {
+      // First send doubles as the contextual moment to ask for notification
+      // permission (it's a user gesture) — so this sender can RECEIVE dings
+      // with the tab backgrounded too. Never blocks the ding itself.
+      if (typeof Notification !== 'undefined' && Notification.permission === 'default') {
+        Notification.requestPermission().catch(() => {});
+      }
+      sendFriendMsg({ type: 'ding', toGuestId });
+    },
   };
+
+  // Auto-dismiss the ding banner; tapping it dismisses sooner.
+  useEffect(() => {
+    if (!ding) return;
+    const t = setTimeout(() => setDing(null), 15_000);
+    return () => clearTimeout(t);
+  }, [ding]);
+
+  // Profile photo: kept on-device, relayed live to the group (item 7).
+  const changePhoto = useCallback((photo) => {
+    setMyPhotoState(photo);
+    if (photo) localStorage.setItem('nb_photo', photo);
+    else localStorage.removeItem('nb_photo');
+    sendFriendMsg({ type: 'setPhoto', photo: photo ?? null });
+  }, [sendFriendMsg]);
 
   // Identified-security-roster opt-in: the only scope that shows this
   // guest's name to staff. Explicit toggle, persisted, re-sent on connect.
@@ -405,6 +467,9 @@ export default function App() {
         onChangeRosterConsent={changeRosterConsent}
         medicalResult={medicalResult}
         onSaveMedical={saveMedical}
+        name={user?.name}
+        photo={myPhoto}
+        onChangePhoto={changePhoto}
         onComplete={() => {
           localStorage.setItem('nb_onboarded', '1');
           setPhase('exits');
@@ -440,6 +505,12 @@ export default function App() {
       friendActions={friendActions}
       wsStatus={wsStatus}
       myPos={myPos}
+      photos={photos}
+      myPhoto={myPhoto}
+      onChangePhoto={changePhoto}
+      ding={ding}
+      onDismissDing={() => setDing(null)}
+      dingSent={dingSent}
       geoStatus={geoStatus}
       geoDetail={geoDetail}
       onGeoRetry={retryGeo}

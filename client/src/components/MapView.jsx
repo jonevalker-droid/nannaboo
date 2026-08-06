@@ -7,7 +7,13 @@ import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
 import ARView from './ARView';
 import FriendsSheet from './FriendsSheet';
-import { haversineMeters, bearingDeg, formatDistance, cardinal } from '../lib/geo';
+import { haversineMeters, bearingDeg, formatDistance, cardinal, minutesAgo, STALE_MS } from '../lib/geo';
+import { colorFor } from '../lib/avatar';
+
+// User-supplied strings (names, pin labels) end up inside divIcon HTML.
+const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({
+  '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
+}[c]));
 
 export const CATEGORY_META = {
   exit:             { emoji: '🚪', label: 'Exits',     color: '#d32f2f' },
@@ -53,18 +59,7 @@ function poiIcon(category) {
   });
 }
 
-const COLORS = [
-  '#e74c3c', '#3498db', '#2ecc71', '#f39c12',
-  '#9b59b6', '#1abc9c', '#e67e22', '#c0392b',
-];
-
-function colorFor(id) {
-  let h = 0;
-  for (const c of id) h = (h * 31 + c.charCodeAt(0)) >>> 0;
-  return COLORS[h % COLORS.length];
-}
-
-function avatarIcon(color, initial, isMe = false, isFriend = false) {
+function avatarIcon({ color, initial, photo = null, isMe = false, isFriend = false, stale = false, tag = null }) {
   const sz = isMe ? 46 : 38;
   const border = isMe ? '3px solid white' : '2px solid white';
   const badge = isFriend
@@ -75,9 +70,24 @@ function avatarIcon(color, initial, isMe = false, isFriend = false) {
         font-size:10px;box-shadow:0 1px 4px rgba(0,0,0,.4);
       ">⭐</div>`
     : '';
+  // Photo when the guest set one; colored initial stays the fallback.
+  const face = photo
+    ? `<img src="${photo}" alt="" style="width:100%;height:100%;object-fit:cover;border-radius:50%;" />`
+    : esc(String(initial).toUpperCase());
+  // Distance / "last seen" pill under the circle (items 6 + 8).
+  const tagHtml = tag
+    ? `<div style="
+        position:absolute;top:${sz + 3}px;left:50%;transform:translateX(-50%);
+        background:${stale ? '#616161' : 'rgba(255,255,255,.94)'};
+        color:${stale ? 'white' : '#333'};
+        font-size:10px;font-weight:700;font-family:-apple-system,sans-serif;
+        padding:1px 7px;border-radius:8px;white-space:nowrap;
+        box-shadow:0 1px 4px rgba(0,0,0,.35);
+      ">${esc(tag)}</div>`
+    : '';
   return L.divIcon({
     className: '',
-    html: `<div style="position:relative;width:${sz}px;height:${sz}px;">
+    html: `<div style="position:relative;width:${sz}px;height:${sz}px;${stale ? 'opacity:.55;' : ''}">
       <div style="
       width:${sz}px;height:${sz}px;background:${color};
       border:${border};border-radius:50%;
@@ -85,8 +95,9 @@ function avatarIcon(color, initial, isMe = false, isFriend = false) {
       color:white;font-weight:800;font-size:${isMe ? 18 : 15}px;
       font-family:-apple-system,sans-serif;
       box-shadow:0 2px 10px rgba(0,0,0,.45);
-      user-select:none;
-    ">${initial.toUpperCase()}</div>${badge}</div>`,
+      user-select:none;overflow:hidden;
+      ${stale ? 'filter:grayscale(70%);' : ''}
+    ">${face}</div>${badge}${tagHtml}</div>`,
     iconSize: [sz, sz],
     iconAnchor: [sz / 2, sz / 2],
     popupAnchor: [0, -(sz / 2 + 4)],
@@ -101,7 +112,7 @@ function pinIcon(label) {
       padding:4px 8px;font-size:12px;font-weight:700;
       font-family:-apple-system,sans-serif;white-space:nowrap;
       box-shadow:0 2px 8px rgba(0,0,0,.3);
-    ">📍 ${label}<div style="
+    ">📍 ${esc(label)}<div style="
       position:absolute;bottom:-9px;left:50%;transform:translateX(-50%);
       width:0;height:0;
       border-left:7px solid transparent;border-right:7px solid transparent;
@@ -144,6 +155,8 @@ function TapListener({ active, onTap }) {
 export default function MapView({
   user, peers, pins, friendState, friendActions, wsStatus,
   myPos, geoStatus, geoDetail, onGeoRetry,
+  photos, myPhoto, onChangePhoto,
+  ding, onDismissDing, dingSent,
   visibility, onChangeVisibility, insideVenue,
   rosterConsent, onChangeRosterConsent,
   medicalResult, onSaveMedical,
@@ -167,6 +180,28 @@ export default function MapView({
   const friendById = new Map(friendState.friends.map((f) => [f.id, f]));
   const sentToIds = new Set(friendState.sent.map((r) => r.toGuestId));
   const receivedFrom = new Map(friendState.received.map((r) => [r.fromGuestId, r]));
+
+  // Staleness is time-driven, not event-driven — tick so markers age into
+  // "last seen X min ago" even when no new group state arrives.
+  const [now, setNow] = useState(Date.now());
+  useEffect(() => {
+    const t = setInterval(() => setNow(Date.now()), 15_000);
+    return () => clearInterval(t);
+  }, []);
+  const isStale = (peer) => peer.lastSeen != null && now - peer.lastSeen > STALE_MS;
+
+  // Best human-readable place name for "last seen … near X": the closest
+  // mapped POI or shared pin within shouting distance, else nothing.
+  const nearestNamed = (pt) => {
+    let best = null;
+    for (const place of [...pois, ...pins]) {
+      const d = haversineMeters(pt, place);
+      if (d <= 200 && (!best || d < best.d)) {
+        best = { name: place.name ?? place.label, d };
+      }
+    }
+    return best?.name ?? null;
+  };
 
   // Friend AR targets track the live peer position instead of a snapshot.
   const resolveArTarget = () => {
@@ -246,12 +281,18 @@ export default function MapView({
   };
 
   const handleTap = useCallback((lat, lng) => {
+    confirmedRef.current = false; // new placement, allow one confirm
     setPendingLL({ lat, lng });
     setPlacing(false);
     setTimeout(() => inputRef.current?.focus(), 100);
   }, []);
 
+  // Guarded against double-fire (Enter keydown + button tap / iOS ghost
+  // click land in the same render, before pendingLL clears in state).
+  const confirmedRef = useRef(false);
   const confirmPin = () => {
+    if (!pendingLL || confirmedRef.current) return;
+    confirmedRef.current = true;
     onAddPin(pinLabel.trim() || 'Pin', pendingLL.lat, pendingLL.lng);
     setPendingLL(null);
     setPinLabel('');
@@ -322,9 +363,23 @@ export default function MapView({
         </button>
         <span className={`ws-dot ws-${wsStatus}`} title={wsStatus} />
         <span className="peer-count">
-          {peers.length + 1} {peers.length + 1 === 1 ? 'person' : 'people'}
+          {/* Disconnected "last seen" entries stay on the map but don't count */}
+          {peers.filter((p) => p.connected !== false).length + 1}{' '}
+          {peers.filter((p) => p.connected !== false).length + 1 === 1 ? 'person' : 'people'}
         </span>
       </div>
+
+      {/* "Someone's looking for you" ding (friend-initiated, item 2) */}
+      {ding && (
+        <div
+          className="ding-banner"
+          role="status"
+          onClick={onDismissDing}
+        >
+          🔔 <strong>{ding.fromName}</strong> is looking for you — make sure
+          you're sharing your location. <span className="ding-dismiss">✕</span>
+        </div>
+      )}
 
       {(pois.length > 0 || friendState.friends.length > 0) && (
         <div className="poi-filter-bar">
@@ -412,7 +467,7 @@ export default function MapView({
           <>
             <Marker
               position={[myPos.lat, myPos.lng]}
-              icon={avatarIcon('#007AFF', user.name[0], true)}
+              icon={avatarIcon({ color: '#007AFF', initial: user.name[0], photo: myPhoto, isMe: true })}
               zIndexOffset={1000}
             >
               <Popup>
@@ -435,14 +490,39 @@ export default function MapView({
         {visiblePeers.filter((p) => p.lat != null).map((peer) => {
           const friend = friendById.get(peer.id);
           const request = receivedFrom.get(peer.id);
+          const stale = isStale(peer);
+          const near = stale ? nearestNamed(peer) : null;
+          // Under-marker pill: live friends get the distance readout; any
+          // stale marker says how old its position is instead.
+          const tag = stale
+            ? `last seen ${minutesAgo(peer.lastSeen, now)}m ago`
+            : friend && myPos
+              ? `${formatDistance(haversineMeters(myPos, peer))} away`
+              : null;
           return (
             <Marker
               key={peer.id}
               position={[peer.lat, peer.lng]}
-              icon={avatarIcon(colorFor(peer.id), peer.name[0], false, !!friend)}
+              icon={avatarIcon({
+                color: colorFor(peer.id),
+                initial: peer.name[0],
+                photo: photos?.[peer.id],
+                isFriend: !!friend,
+                stale,
+                tag,
+              })}
             >
               <Popup>
                 <strong>{friend ? '⭐ ' : ''}{peer.name}</strong>
+                {stale && (
+                  <>
+                    <br />
+                    <span className="poi-popup-meta">
+                      ⏱ Last seen {minutesAgo(peer.lastSeen, now)} min ago
+                      {near ? ` near ${near}` : ''} — no signal or app closed
+                    </span>
+                  </>
+                )}
                 {myPos && (
                   <>
                     <br />
@@ -552,6 +632,10 @@ export default function MapView({
           user={user}
           peers={peers}
           myPos={myPos}
+          photos={photos}
+          myPhoto={myPhoto}
+          onChangePhoto={onChangePhoto}
+          dingSent={dingSent}
           friendState={friendState}
           friendActions={friendActions}
           visibility={visibility}

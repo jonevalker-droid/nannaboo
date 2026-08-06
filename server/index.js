@@ -57,6 +57,23 @@ function getOrCreateGroup(code) {
 // Live connections by guest id (friend updates target individuals, not groups)
 const sessions = new Map(); // guestId -> { ws, groupCode }
 
+// "Someone's looking for you" dings (friend-to-friend, user-initiated only).
+// A ding to a friend who isn't connected right now waits here and is
+// delivered on their next join — one pending entry per sender, latest wins.
+const pendingDings = new Map(); // toGuestId -> Map(fromGuestId -> { fromName, at })
+const lastDing = new Map();     // `${from}|${to}` -> ms of last ding sent
+const DING_COOLDOWN_MS = 30_000;
+
+// Stale-location support ("last seen"): a guest whose socket dies (dead
+// zone, backgrounded browser) stays on the map as a disconnected entry with
+// their last position instead of silently vanishing, then is pruned.
+const GHOST_TTL_MS = 30 * 60_000;
+
+// Profile photos are relayed in-memory only — captured and stored on the
+// guest's device, shown live to their group, never written to the DB.
+const PHOTO_DATA_RE = /^data:image\/(jpeg|png|webp);base64,[A-Za-z0-9+/=]+$/;
+const PHOTO_MAX_CHARS = 120_000; // ~90KB decoded; a 200×200 JPEG is ~15KB
+
 // Per-viewer friend visibility, mirrored from friendStore whenever a
 // friendState is computed (join + every friend op), so groupState broadcasts
 // can apply friend rules synchronously: viewerId -> Map(friendId -> visibleToMe)
@@ -69,7 +86,13 @@ const VISIBILITY_MODES = ['public', 'friends_only', 'off'];
 async function resolveEventKey(groupCode) {
   if (db.enabled) {
     const eventId = await db.ensureEventForGroup(groupCode);
-    if (eventId) return eventId;
+    if (eventId) {
+      // The id can roll over when the event's visibility window lapses —
+      // keep the group's cached copy current for position/pin writes.
+      const g = groups.get(groupCode);
+      if (g) g.eventId = eventId;
+      return eventId;
+    }
   }
   return `code:${groupCode}`;
 }
@@ -80,8 +103,9 @@ async function sendFriendState(targetGuestId) {
   const sess = sessions.get(targetGuestId);
   if (!sess || sess.ws.readyState !== 1) return;
   try {
-    const eventKey = groups.get(sess.groupCode)?.eventId
-      ?? await resolveEventKey(sess.groupCode);
+    // Always re-resolve (cached with the window expiry): a this_event_only
+    // link must stop resolving as visible once the event window lapses.
+    const eventKey = await resolveEventKey(sess.groupCode);
     const state = await friendStore.getFriendState(targetGuestId, eventKey);
     friendVisCache.set(
       targetGuestId,
@@ -106,7 +130,7 @@ async function sendFriendState(targetGuestId) {
 async function handleFriendOp(msg, guestId, groupCode) {
   const group = groups.get(groupCode);
   if (!group) return;
-  const eventKey = group.eventId ?? await resolveEventKey(groupCode);
+  const eventKey = await resolveEventKey(groupCode);
   let other = null;
 
   if (msg.type === 'friendRequest') {
@@ -131,7 +155,9 @@ async function handleFriendOp(msg, guestId, groupCode) {
   // Friendship/level changes alter who may see whom on the map right now
   // (friends_only guests appear to new friends; a level set to 'off'
   // overrides a public guest down) — re-send the filtered group state.
+  // Photos follow listing (a newly-visible friends_only guest's photo too).
   broadcastGroup(group);
+  broadcastPhotos(group);
 }
 
 // Persist the guest/event, and after a server restart reload the group's pins
@@ -179,17 +205,28 @@ function canSeePosition(viewerId, g) {
 // (the friend link + geofence still decide whether the position shows).
 // Friendship therefore forms by the friends_only guest reaching out first.
 // The viewer's own entry carries visibility + inside for the privacy UI.
+// May VIEWER even see GUEST listed (name in roster / photo / friend rows)?
+// 'off' guests are omitted entirely, and so are friends_only guests for
+// anyone who isn't an accepted friend — not even their name is discoverable.
+function listedFor(viewer, g) {
+  if (g.id === viewer.id) return true;
+  if (g.visibility === 'off') return false;
+  if (g.visibility === 'friends_only'
+      && !friendVisCache.get(viewer.id)?.has(g.id)) return false;
+  return true;
+}
+
 function guestsFor(viewer, group) {
   const out = [];
   for (const g of group.guests.values()) {
-    const { ws: _ws, ...pub } = g;
+    // Photos ride a separate photoState message (join/photo-change only) —
+    // never the per-position groupState broadcasts, which must stay small.
+    const { ws: _ws, photo: _p, disconnectedAt: _dc, ...pub } = g;
     if (g.id === viewer.id) {
       out.push(pub);
       continue;
     }
-    if (g.visibility === 'off') continue;
-    if (g.visibility === 'friends_only'
-        && !friendVisCache.get(viewer.id)?.has(g.id)) continue;
+    if (!listedFor(viewer, g)) continue;
     // rosterConsent is between the guest and security — never shown to peers.
     if (canSeePosition(viewer.id, g)) {
       const { visibility: _v, inside: _i, rosterConsent: _rc, ...visible } = pub;
@@ -203,6 +240,28 @@ function guestsFor(viewer, group) {
     }
   }
   return out;
+}
+
+// Per-viewer photo map, gated by exactly the listing rule above: a photo is
+// never exposed to anyone who couldn't already see that guest's name.
+function photosFor(viewer, group) {
+  const photos = {};
+  for (const g of group.guests.values()) {
+    if (g.id !== viewer.id && g.photo && listedFor(viewer, g)) {
+      photos[g.id] = g.photo;
+    }
+  }
+  return photos;
+}
+
+function broadcastPhotos(group) {
+  for (const viewer of group.guests.values()) {
+    if (viewer.ws.readyState !== 1) continue;
+    viewer.ws.send(JSON.stringify({
+      type: 'photoState',
+      photos: photosFor(viewer, group),
+    }));
+  }
 }
 
 function broadcastGroup(group) {
@@ -243,12 +302,18 @@ wss.on('connection', (ws) => {
       if (existing && existing.ws !== ws) existing.ws.terminate();
 
       // Preserve joinedAt across reconnects — it feeds live dwell analytics.
+      // Position, lastSeen and photo also survive a reconnect: a flaky-signal
+      // guest reads as "last seen X min ago" instead of dropping off the map.
       group.guests.set(guestId, {
         ws, id: guestId, name, groupCode, visibility,
-        lat: null, lng: null, accuracy: null, heading: null,
-        inside: null, // unknown until the first position fix
+        lat: existing?.lat ?? null, lng: existing?.lng ?? null,
+        accuracy: existing?.accuracy ?? null, heading: existing?.heading ?? null,
+        inside: existing?.inside ?? null, // unknown until the first position fix
+        photo: existing?.photo ?? null,
+        connected: true,
+        disconnectedAt: null,
         joinedAt: existing?.joinedAt ?? Date.now(),
-        lastSeen: Date.now(),
+        lastSeen: existing?.lastSeen ?? Date.now(),
       });
 
       sessions.set(guestId, { ws, groupCode });
@@ -257,11 +322,26 @@ wss.on('connection', (ws) => {
       broadcastGroup(group);
       persistJoin(group, groupCode, guestId, name, visibility)
         .catch(err => console.error('[db] persistJoin failed:', err.message));
+      // Dings that arrived while this guest was away land now — that's the
+      // "open the app" moment the copy asks for.
+      const queued = pendingDings.get(guestId);
+      if (queued) {
+        pendingDings.delete(guestId);
+        for (const [fromId, d] of queued) {
+          ws.send(JSON.stringify({
+            type: 'ding', fromGuestId: fromId, fromName: d.fromName, at: d.at,
+          }));
+        }
+      }
       // Once the friend cache is warm, re-send group state so friends_only
       // friends' positions appear immediately, not on the next position tick.
+      // Photos go after the cache too — photosFor gates on it.
       sendFriendState(guestId).then(() => {
         const g = groups.get(groupCode);
-        if (g?.guests.has(guestId)) broadcastGroup(g);
+        if (g?.guests.has(guestId)) {
+          broadcastGroup(g);
+          broadcastPhotos(g);
+        }
       });
       return;
     }
@@ -293,6 +373,47 @@ wss.on('connection', (ws) => {
       guest.visibility = msg.visibility;
       db.setGuestVisibility(guestId, msg.visibility);
       broadcastGroup(group);
+      broadcastPhotos(group); // photo exposure follows listing
+    }
+
+    // Profile photo (same-initial icon fix). In-memory relay only: the image
+    // lives on the guest's device; the server never persists it.
+    if (msg.type === 'setPhoto') {
+      const guest = group.guests.get(guestId);
+      if (!guest) return;
+      const photo = msg.photo ?? null;
+      if (photo !== null
+          && !(typeof photo === 'string'
+               && photo.length <= PHOTO_MAX_CHARS
+               && PHOTO_DATA_RE.test(photo))) return;
+      guest.photo = photo;
+      broadcastPhotos(group);
+    }
+
+    // "Someone's looking for you" ding: user-initiated, accepted friends
+    // only (the sender's warmed visibility cache mirrors friendships), and
+    // rate-limited per pair so it can't be spammed.
+    if (msg.type === 'ding') {
+      const guest = group.guests.get(guestId);
+      if (!guest || typeof msg.toGuestId !== 'string' || msg.toGuestId === guestId) return;
+      if (!friendVisCache.get(guestId)?.has(msg.toGuestId)) return;
+      const key = `${guestId}|${msg.toGuestId}`;
+      const nowMs = Date.now();
+      if (nowMs - (lastDing.get(key) ?? 0) < DING_COOLDOWN_MS) return;
+      lastDing.set(key, nowMs);
+      const payload = JSON.stringify({
+        type: 'ding', fromGuestId: guestId, fromName: guest.name, at: nowMs,
+      });
+      const target = sessions.get(msg.toGuestId);
+      if (target?.ws.readyState === 1) {
+        target.ws.send(payload);
+      } else {
+        if (!pendingDings.has(msg.toGuestId)) pendingDings.set(msg.toGuestId, new Map());
+        pendingDings.get(msg.toGuestId).set(guestId, { fromName: guest.name, at: nowMs });
+      }
+      if (guest.ws.readyState === 1) {
+        guest.ws.send(JSON.stringify({ type: 'dingSent', toGuestId: msg.toGuestId, at: nowMs }));
+      }
     }
 
     // Explicit opt-in/out of the identified security roster (Prompt 6) —
@@ -355,12 +476,17 @@ wss.on('connection', (ws) => {
     }
 
     if (msg.type === 'addPin') {
+      // Idempotent by pin id (client-generated uuid): a double-fired drop
+      // handler (Enter + tap, iOS ghost click) can't create twin pins with
+      // twin overlapping labels.
+      const pinId = db.isUuid(msg.pinId) ? msg.pinId : randomUUID();
+      if (group.pins.some(p => p.id === pinId)) return;
       if (group.pins.length >= 3) {
         const dropped = group.pins.shift(); // drop oldest
         db.deletePin(dropped.id);
       }
       const pin = {
-        id: randomUUID(),
+        id: pinId,
         label: String(msg.label || 'Pin').trim().slice(0, 30),
         lat: msg.lat,
         lng: msg.lng,
@@ -395,10 +521,14 @@ wss.on('connection', (ws) => {
     if (!group) return;
     // A reconnect may already have replaced this entry with a live socket
     // (join terminates the stale one, and its close event lands here after
-    // the new entry is in place). Deleting by id alone would ghost the guest:
-    // still connected, but positions dropped and invisible to the group.
-    if (group.guests.get(guestId)?.ws !== ws) return;
-    group.guests.delete(guestId);
+    // the new entry is in place) — leave the fresh entry alone.
+    const guest = group.guests.get(guestId);
+    if (guest?.ws !== ws) return;
+    // Don't delete: keep the entry as a disconnected "last seen" marker so a
+    // dead-zone dropout reads as stale, not as the guest vanishing. The
+    // sweep below prunes it after GHOST_TTL_MS (or a rejoin revives it).
+    guest.connected = false;
+    guest.disconnectedAt = Date.now();
     broadcastGroup(group);
   });
 
@@ -410,8 +540,18 @@ wss.on('connection', (ws) => {
 // for being quiet. A socket that misses a whole ping round is dead; terminate
 // it and let the close handler remove the guest and broadcast.
 setInterval(() => {
+  const now = Date.now();
   for (const [code, group] of groups) {
+    let pruned = false;
     for (const guest of group.guests.values()) {
+      // Disconnected "last seen" entries aren't pinged — just aged out.
+      if (guest.connected === false) {
+        if (now - (guest.disconnectedAt ?? 0) > GHOST_TTL_MS) {
+          group.guests.delete(guest.id);
+          pruned = true;
+        }
+        continue;
+      }
       if (guest.ws.isAlive === false) {
         guest.ws.terminate();
         continue;
@@ -419,6 +559,7 @@ setInterval(() => {
       guest.ws.isAlive = false;
       guest.ws.ping();
     }
+    if (pruned) broadcastGroup(group);
     if (group.guests.size === 0 && group.pins.length === 0) groups.delete(code);
   }
 }, 60_000);

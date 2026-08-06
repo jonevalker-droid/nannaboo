@@ -15,12 +15,14 @@
 // testing showed people reflexively deny cold prompts).
 import { useEffect, useState } from 'react';
 import { VISIBILITY_OPTIONS } from './JoinForm';
+import PhotoPicker from './PhotoPicker';
 
 export default function Onboarding({
   geoStatus, onRequestLocation,
   visibility, onChangeVisibility,
   rosterConsent, onChangeRosterConsent,
   medicalResult, onSaveMedical,
+  name, photo, onChangePhoto,
   onComplete,
 }) {
   const [step, setStep] = useState(0);
@@ -37,7 +39,7 @@ export default function Onboarding({
   }, []);
 
   const next = () => setStep((s) => s + 1);
-  const TOTAL = 6;
+  const TOTAL = 7;
 
   const saveMedicalAndNext = () => {
     const text = medical.trim();
@@ -119,6 +121,26 @@ export default function Onboarding({
 
         {step === 3 && (
           <section className="onboarding-step">
+            <h2>📸 Your photo <span className="onboarding-optional">(optional)</span></h2>
+            <p>
+              A photo on your map marker helps your crew tell the Jons from
+              the Jimmys — two people with the same first initial otherwise
+              get the same icon.
+            </p>
+            <PhotoPicker photo={photo} name={name} onChange={onChangePhoto} />
+            <p className="onboarding-hint">
+              Stays on this phone and is shown live to your group only —
+              never saved on the server. Skip it and you'll be a colored
+              initial; you can add one anytime in Friends &amp; Privacy.
+            </p>
+            <button className="onboarding-primary" onClick={next}>
+              {photo ? 'Looks good →' : 'Skip for now →'}
+            </button>
+          </section>
+        )}
+
+        {step === 4 && (
+          <section className="onboarding-step">
             <h2>🛡 Event security</h2>
             <p>
               If you opt in, security can see your <strong>name</strong> — not
@@ -135,7 +157,7 @@ export default function Onboarding({
           </section>
         )}
 
-        {step === 4 && (
+        {step === 5 && (
           <section className="onboarding-step">
             <h2>⚕ Medical info <span className="onboarding-optional">(optional)</span></h2>
             {rosterConsent ? (
@@ -169,7 +191,7 @@ export default function Onboarding({
           </section>
         )}
 
-        {step === 5 && (
+        {step === 6 && (
           <section className="onboarding-step">
             <h2>🗑 Your data</h2>
             <ul className="onboarding-data-list">

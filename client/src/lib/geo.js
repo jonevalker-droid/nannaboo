@@ -20,11 +20,19 @@ export function bearingDeg(from, to) {
   return (Math.atan2(y, x) * 180 / Math.PI + 360) % 360;
 }
 
-/** US-friendly: feet under ~1000 ft, miles after. */
+/** US-friendly: feet up close, miles past a quarter mile. */
 export function formatDistance(meters) {
   const feet = meters * 3.28084;
-  if (feet < 1000) return `${Math.round(feet)} ft`;
+  if (feet < 1320) return `${Math.round(feet)} ft`;
   return `${(meters / 1609.34).toFixed(1)} mi`;
+}
+
+/** A position older than this reads as "last seen X min ago", not live. */
+export const STALE_MS = 2 * 60_000;
+
+/** Whole minutes since `ts`, floored at 1 — for "last seen X min ago". */
+export function minutesAgo(ts, now = Date.now()) {
+  return Math.max(1, Math.round((now - ts) / 60000));
 }
 
 const POINTS = ['N', 'NE', 'E', 'SE', 'S', 'SW', 'W', 'NW'];

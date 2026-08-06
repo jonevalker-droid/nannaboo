@@ -1,4 +1,15 @@
-const CACHE = 'nannaboo-v2';
+const CACHE = 'nannaboo-v3';
+
+// "Someone's looking for you" ding: tapping the notification focuses the
+// open app (or reopens it) — the whole point is getting them back on the map.
+self.addEventListener('notificationclick', (e) => {
+  e.notification.close();
+  e.waitUntil(
+    self.clients.matchAll({ type: 'window', includeUncontrolled: true }).then((wins) =>
+      wins.length ? wins[0].focus() : self.clients.openWindow('/')
+    )
+  );
+});
 
 self.addEventListener('install', (e) => {
   e.waitUntil(
