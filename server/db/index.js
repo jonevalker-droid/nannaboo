@@ -184,7 +184,7 @@ export async function grantJoinConsents(guestId, eventId) {
 // The number is CONFIG (venue.position_retention_hours in DB mode,
 // POSITION_RETENTION_HOURS env in memory mode), never hardcoded in app
 // logic — the guest-facing notice reads it from GET /api/venue/retention.
-let retentionHours = Number(process.env.POSITION_RETENTION_HOURS) || 48;
+let retentionHours = Number(process.env.POSITION_RETENTION_HOURS) || 72;
 
 export function getRetentionHours() {
   return retentionHours;
