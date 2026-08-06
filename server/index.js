@@ -322,11 +322,11 @@ wss.on('connection', (ws) => {
       broadcastGroup(group);
       persistJoin(group, groupCode, guestId, name, visibility)
         .catch(err => console.error('[db] persistJoin failed:', err.message));
-      // Dings that arrived while this guest was away land now — that's the
-      // "open the app" moment the copy asks for.
+      // Un-ACKed dings land (again) now — that's the "open the app" moment
+      // the copy asks for. Entries clear only on the client's dingAck, so a
+      // delivery lost to a suspended tab is retried on every (re)join.
       const queued = pendingDings.get(guestId);
       if (queued) {
-        pendingDings.delete(guestId);
         for (const [fromId, d] of queued) {
           ws.send(JSON.stringify({
             type: 'ding', fromGuestId: fromId, fromName: d.fromName, at: d.at,
@@ -401,18 +401,30 @@ wss.on('connection', (ws) => {
       const nowMs = Date.now();
       if (nowMs - (lastDing.get(key) ?? 0) < DING_COOLDOWN_MS) return;
       lastDing.set(key, nowMs);
-      const payload = JSON.stringify({
-        type: 'ding', fromGuestId: guestId, fromName: guest.name, at: nowMs,
-      });
+      // Store-and-forward, not fire-and-forget: iOS suspends a backgrounded
+      // tab WITHOUT closing its socket, so a "live" send can land in a
+      // zombie socket and vanish. Every ding stays queued until the
+      // recipient's app ACKs it; join/reconnect re-flushes the queue.
+      if (!pendingDings.has(msg.toGuestId)) pendingDings.set(msg.toGuestId, new Map());
+      pendingDings.get(msg.toGuestId).set(guestId, { fromName: guest.name, at: nowMs });
       const target = sessions.get(msg.toGuestId);
       if (target?.ws.readyState === 1) {
-        target.ws.send(payload);
-      } else {
-        if (!pendingDings.has(msg.toGuestId)) pendingDings.set(msg.toGuestId, new Map());
-        pendingDings.get(msg.toGuestId).set(guestId, { fromName: guest.name, at: nowMs });
+        target.ws.send(JSON.stringify({
+          type: 'ding', fromGuestId: guestId, fromName: guest.name, at: nowMs,
+        }));
       }
       if (guest.ws.readyState === 1) {
         guest.ws.send(JSON.stringify({ type: 'dingSent', toGuestId: msg.toGuestId, at: nowMs }));
+      }
+    }
+
+    // Recipient's app confirmed a ding reached a *running* page — only now
+    // does it leave the queue.
+    if (msg.type === 'dingAck') {
+      const q = pendingDings.get(guestId);
+      if (q && typeof msg.fromGuestId === 'string') {
+        q.delete(msg.fromGuestId);
+        if (q.size === 0) pendingDings.delete(guestId);
       }
     }
 
@@ -561,6 +573,13 @@ setInterval(() => {
     }
     if (pruned) broadcastGroup(group);
     if (group.guests.size === 0 && group.pins.length === 0) groups.delete(code);
+  }
+  // Un-ACKed dings for guests who never come back expire after a day.
+  for (const [toId, q] of pendingDings) {
+    for (const [fromId, d] of q) {
+      if (now - d.at > 24 * 3600_000) q.delete(fromId);
+    }
+    if (q.size === 0) pendingDings.delete(toId);
   }
 }, 60_000);
 

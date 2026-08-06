@@ -4,6 +4,7 @@ import Onboarding from './components/Onboarding';
 import NearestExits from './components/NearestExits';
 import MapView from './components/MapView';
 import ARView from './components/ARView';
+import { primeAudio, playDing } from './lib/sound';
 import './App.css';
 
 const VISIBILITY_VALUES = ['public', 'friends_only', 'off'];
@@ -108,8 +109,13 @@ export default function App() {
         setDingSent((m) => ({ ...m, [msg.toGuestId]: msg.at }));
       }
       if (msg.type === 'ding') {
+        // ACK first: the server keeps the ding queued (and re-sends on every
+        // rejoin) until a RUNNING page confirms receipt — a send into an
+        // iOS-suspended zombie socket must not count as delivered.
+        ws.send(JSON.stringify({ type: 'dingAck', fromGuestId: msg.fromGuestId, at: msg.at }));
         setDing({ fromName: msg.fromName, at: msg.at });
-        navigator.vibrate?.([200, 100, 200]);
+        navigator.vibrate?.([200, 100, 200]); // Android; iOS has no vibrate API
+        playDing();
         // OS-level notification only if the tab is hidden and permission was
         // already granted — the in-app banner covers the foreground case.
         if (document.hidden
@@ -386,6 +392,31 @@ export default function App() {
       sendFriendMsg({ type: 'ding', toGuestId });
     },
   };
+
+  // Unlock WebAudio on the first tap so the ding chime can play (iOS).
+  useEffect(() => {
+    window.addEventListener('pointerdown', primeAudio, { once: true });
+    return () => window.removeEventListener('pointerdown', primeAudio);
+  }, []);
+
+  // Coming back from the background: iOS freezes the tab without closing
+  // the socket, so on resume probe it — a zombie socket errors on send,
+  // which tears it down and triggers the normal reconnect (whose join then
+  // re-flushes any queued dings). A cleanly-closed socket reconnects now
+  // instead of waiting out the 3s retry timer.
+  useEffect(() => {
+    const onVisible = () => {
+      if (document.hidden || !userRef.current) return;
+      const ws = wsRef.current;
+      if (ws?.readyState === WebSocket.OPEN) {
+        try { ws.send('{"type":"probe"}'); } catch { /* close handler takes over */ }
+      } else if (ws?.readyState !== WebSocket.CONNECTING) {
+        connect(userRef.current);
+      }
+    };
+    document.addEventListener('visibilitychange', onVisible);
+    return () => document.removeEventListener('visibilitychange', onVisible);
+  }, [connect]);
 
   // Auto-dismiss the ding banner; tapping it dismisses sooner.
   useEffect(() => {
